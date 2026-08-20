@@ -64,11 +64,15 @@ load-bearing.
 - [x] I1 lint fails on a deliberately added `import { keccak_256 }` in `src/core`
 
 ### Exit
-- [ ] `uses: <org>/xops@dev` runs in a workflow and prints a parsed `Intent`
-- [ ] Ground-rule checks green on every push
+- [x] `uses: <org>/xops@dev` runs in a workflow and prints a parsed `Intent`
+- [x] Ground-rule checks green on every push
 - [x] Runtime dependency count: **0** (nothing needs noble yet)
 
 > The last line is the tell. If week 1 needs a crypto library, the boundary is already wrong.
+
+**Evidence:** PR [#1](https://github.com/kpj2006/XOps/pull/1) · CI run
+[32404913032](https://github.com/kpj2006/XOps/actions/runs/32404913032) — ground rules and the
+`uses: ./` dry-run both green at `9902b1b`.
 
 ---
 
