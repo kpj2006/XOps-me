@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ground-rules:
+    name: Ground rules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci
+
+      - name: I1 — layer boundary lint
+        run: npm run lint
+
+      - name: I1 — layer boundary grep
+        run: npm run check:boundary
+
+      - name: I11 — runtime dependency count
+        run: npm run check:deps
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Tests (I3, I5, I7, I8, I9 and the mock end-to-end)
+        run: npm test
+
+      - name: I12 — dist/ is reproducible from src/
+        run: |
+          npm run build
+          if ! git diff --exit-code -- dist; then
+            echo "::error::dist/ does not match a rebuild from src/. Run 'npm run build' and commit dist/."
+            exit 1
+          fi
+
+  action:
+    name: Action runs and parses an Intent
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dry-run with no secrets configured
+        id: xops
+        uses: ./
+        with:
+          recipient: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+          amount: "2500000"
+
+      - name: Assert the run stayed in dry-run and produced a key
+        run: |
+          test "${{ steps.xops.outputs.STATUS }}" = "dry-run"
+          test -n "${{ steps.xops.outputs.IDEMPOTENCY_KEY }}"
+          echo "key: ${{ steps.xops.outputs.IDEMPOTENCY_KEY }}"

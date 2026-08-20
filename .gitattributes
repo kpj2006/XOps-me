@@ -1,0 +1,4 @@
+# I12 depends on dist/ being byte-identical across platforms.
+* text=auto eol=lf
+*.png binary
+*.jpg binary

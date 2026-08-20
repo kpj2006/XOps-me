@@ -1,0 +1,50 @@
+name: "XOps"
+description: "CI/CD-native value transfer. A repository event produces a payment intent, a human signs it, the workflow settles it."
+author: "AOSSIE-Org"
+branding:
+  icon: "git-merge"
+  color: "purple"
+
+inputs:
+  recipient:
+    description: "Opaque payout identity. An inline address, or anything a resolver understands."
+    required: true
+  amount:
+    description: "Atomic units, as a string. USDC has 6 decimals, so 2500000 is 2.50 USDC."
+    required: true
+  asset:
+    description: "Opaque asset identifier from the chain registry."
+    required: false
+    default: "USDC"
+  network:
+    description: "CAIP-2 network identifier."
+    required: false
+    default: "eip155:84532"
+  scheme:
+    description: "x402 settlement scheme."
+    required: false
+    default: "exact"
+  round:
+    description: "Bump to deliberately re-pay the same recipient for the same ref."
+    required: false
+    default: "0"
+  mode:
+    description: "dry-run | facilitator | self | auto. Real settlement is always explicit."
+    required: false
+    default: "dry-run"
+
+outputs:
+  TX_HASH:
+    description: "Settlement transaction identifier, when one exists."
+  EXPLORER_URL:
+    description: "Human-readable link to the settlement."
+  STATUS:
+    description: "dry-run | settled | already-paid | error"
+  ERROR_CODE:
+    description: "Code from the XOps error taxonomy, empty on success."
+  IDEMPOTENCY_KEY:
+    description: "Canonical key this run derived. Identical inputs reproduce it."
+
+runs:
+  using: "node20"
+  main: "dist/index.js"

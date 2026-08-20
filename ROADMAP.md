@@ -47,28 +47,32 @@ The week that decides whether the other five work. Nothing here is glamorous and
 load-bearing.
 
 ### Build
-- [ ] Repo, `action.yml` (`using: node20`), `ncc` bundle pipeline, committed `dist/`
-- [ ] `src/core/types.ts` — `PaymentRequirements`, `PaymentPayload`, `SettlementResponse`, `Intent`, `IdempotencyKey`, `PayoutTarget`
-- [ ] `src/core/idempotency.ts` — `canonical()`, returns a **string**, no hashing
-- [ ] `src/core/errors.ts` — full taxonomy from `REFERENCES.md` §6
-- [ ] `src/drivers/types.ts` + `registry.ts` with the tier gate
-- [ ] `src/resolvers/` — interface + inline-address resolver
-- [ ] `test/drivers/mock/` — in-memory `SettlementDriver`
-- [ ] **ESLint `no-restricted-imports` + CI grep for I1**
+- [x] Repo, `action.yml` (`using: node20`), `ncc` bundle pipeline, committed `dist/`
+- [x] `src/core/types.ts` — `PaymentRequirements`, `PaymentPayload`, `SettlementResponse`, `Intent`, `IdempotencyKey`, `PayoutTarget`
+- [x] `src/core/idempotency.ts` — `canonical()`, returns a **string**, no hashing
+- [x] `src/core/errors.ts` — full taxonomy from `REFERENCES.md` §6
+- [x] `src/drivers/types.ts` + `registry.ts` with the tier gate
+- [x] `src/resolvers/` — interface + inline-address resolver
+- [x] `test/drivers/mock/` — in-memory `SettlementDriver`
+- [x] **ESLint `no-restricted-imports` + CI grep for I1**
 
 ### Verify
-- [ ] Mock driver settles end-to-end through the registry
-- [ ] `canonical()` property test: same inputs → same string; `amount` changes → **same** string
-- [ ] Custodial mock driver **throws** at tier-0 registration (I3)
-- [ ] Driver with `nativeReplayProtection: false` refuses to settle (I9)
-- [ ] I1 lint fails on a deliberately added `import { keccak_256 }` in `src/core`
+- [x] Mock driver settles end-to-end through the registry
+- [x] `canonical()` property test: same inputs → same string; `amount` changes → **same** string
+- [x] Custodial mock driver **throws** at tier-0 registration (I3)
+- [x] Driver with `nativeReplayProtection: false` refuses to settle (I9)
+- [x] I1 lint fails on a deliberately added `import { keccak_256 }` in `src/core`
 
 ### Exit
-- [ ] `uses: <org>/xops@dev` runs in a workflow and prints a parsed `Intent`
-- [ ] Ground-rule checks green on every push
-- [ ] Runtime dependency count: **0** (nothing needs noble yet)
+- [x] `uses: <org>/xops@dev` runs in a workflow and prints a parsed `Intent`
+- [x] Ground-rule checks green on every push
+- [x] Runtime dependency count: **0** (nothing needs noble yet)
 
 > The last line is the tell. If week 1 needs a crypto library, the boundary is already wrong.
+
+**Evidence:** PR [#1](https://github.com/kpj2006/XOps/pull/1) · CI run
+[32404913032](https://github.com/kpj2006/XOps/actions/runs/32404913032) — ground rules and the
+`uses: ./` dry-run both green at `9902b1b`.
 
 ---
 
