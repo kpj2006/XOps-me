@@ -30,34 +30,41 @@ Node ≥ 20 (native `fetch`, `using: node20` in `action.yml`).
 
 ## 2. Chain registry — `assets/chains.json`
 
-**Base Sepolia is the only network implemented until v1.0.0.** Everything in §2.3 is reference
-material for later phases — do not add those entries to `chains.json` yet.
+**Ethereum Sepolia is the only network implemented until v1.0.0.** Everything in §2.3 is
+reference material for later phases — do not add those entries to `chains.json` yet.
 
-### 2.1 Base Sepolia — the only active target
+### 2.1 Ethereum Sepolia — the only active target
+
+Changed from Base Sepolia on 2026-09-05. Reason: the Safe **AllowanceModule** is canonically
+deployed on Ethereum Sepolia and **absent from Base Sepolia entirely**. Under the allowance
+model the module is load-bearing. See `DECISION-LOG.md` §4 and §6c.
 
 ```jsonc
 {
-  "eip155:84532": {
-    "name": "Base Sepolia",
-    "chainId": 84532,
-    "explorer": "https://sepolia.basescan.org",
-    "facilitator": "https://x402.org/facilitator",
+  "eip155:11155111": {
+    "name": "Ethereum Sepolia",
+    "chainId": 11155111,
+    "explorer": "https://sepolia.etherscan.io",
+    "allowanceModule": "0xCFbFaC74C26F8647cBDb8c5caf80BB5b32E43134", // v0.1.0, verified
     "assets": {
       "USDC": {
-        "address": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
-        "decimals": 6,
-        "eip712": { "name": "USDC", "version": "2" }
+        "address": "TODO — verify against Circle's docs before use",
+        "decimals": 6
       }
     }
   }
 }
 ```
 
-> ⚠️ **Verify before the first signature.** These values come from ecosystem sources and were
-> **not** independently confirmed in the session that produced this file. Call `name()` and
-> `version()` on the deployed contract and check the address against Circle's documentation. A
-> wrong EIP-712 domain produces a structurally valid signature that fails on-chain with no
-> useful error — the single most likely thing to cost you a day.
+> ⚠️ **The USDC address is deliberately unfilled.** Get it from `faucet.circle.com` /
+> Circle's contract documentation for Ethereum Sepolia and confirm `decimals()` on-chain.
+> It was not verified in the session that produced this entry, and a guessed token address is
+> worse than an empty one.
+
+> **The `facilitator` and `eip712` fields are gone on purpose.** Both belonged to the x402 /
+> EIP-3009 `transferWithAuthorization` design. Under the allowance model there is no facilitator
+> and no typed-data signature to build, so there is no EIP-712 domain to get wrong. The
+> AllowanceModule address replaces them as the load-bearing constant.
 
 **Why this chain:** `x402.org/facilitator` is free, keyless, and the URL used in the official
 quickstart. Testnet USDC comes from `faucet.circle.com`; gas from the Alchemy, GetBlock, or CDP
@@ -156,8 +163,8 @@ firm.
 
 | | Source |
 |---|---|
-| Base Sepolia USDC | `faucet.circle.com` — select Base Sepolia + USDC |
-| Base Sepolia ETH | Alchemy, GetBlock, or Coinbase CDP faucets |
+| Ethereum Sepolia USDC | `faucet.circle.com` — select Ethereum Sepolia + USDC |
+| Ethereum Sepolia ETH | Google Cloud Web3 faucet, Alchemy, or QuickNode |
 
 Public facilitators are free today with no published SLA. Design for one disappearing — that is
 what `mode: self` and `mode: auto` exist for.

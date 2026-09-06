@@ -270,8 +270,12 @@ contract rejects it as used. That rejection is **success** (I8).
 
 ## Scope
 
-**In:** `exact` scheme · **Base Sepolia only** · GitHub adapter · facilitator driver ·
-inline-address resolver · CLI · static signer page · machine-readable receipts.
+**In:** **Ethereum Sepolia only** · GitHub adapter · Safe AllowanceModule driver ·
+inline-address resolver · CLI · machine-readable receipts.
+
+> Was: "`exact` scheme · Base Sepolia only · facilitator driver · static signer page". The
+> scheme, facilitator driver and signer page all belonged to the x402 / EIP-3009 design and are
+> superseded by the allowance model. See the banner at the top of this file.
 
 **Specify, do not build:** any second network (Base mainnet, Monad, Solana, Polygon) ·
 `auth-capture` (escrow) · `upto` · `batch-settlement` · non-EVM drivers · ERC-8004 resolver ·
@@ -304,7 +308,7 @@ Take the interface, never the bet. Agents may propose; humans sign.
 - `REFERENCES.md` — verified constants, type definitions, tested primitives, error codes
 - Spec: `github.com/x402-foundation/x402` → `specs/x402-specification-v2.md`,
   `specs/schemes/exact/scheme_exact_evm.md`
-- Base Sepolia constants and the release gate: `REFERENCES.md` §2
+- Ethereum Sepolia constants and the release gate: `REFERENCES.md` §2
 
 Prefer deleting code over adding an abstraction. The dependency count and the layer boundary
 are the product.

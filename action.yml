@@ -19,7 +19,7 @@ inputs:
   network:
     description: "CAIP-2 network identifier."
     required: false
-    default: "eip155:84532"
+    default: "eip155:11155111"
   scheme:
     description: "x402 settlement scheme."
     required: false
