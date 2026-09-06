@@ -24,10 +24,13 @@ const PAYLOAD: PaymentPayload = {
   payload: {},
 };
 
-function driver(caps: Partial<Capabilities> = {}): SettlementDriver & { settled: number } {
+function driver(
+  caps: Partial<Capabilities> = {},
+): SettlementDriver & { prepared: number; broadcast_: number } {
   const self = {
     id: "test-driver",
-    settled: 0,
+    prepared: 0,
+    broadcast_: 0,
     capabilities: {
       offlineVerify: true,
       needsGas: true,
@@ -39,21 +42,33 @@ function driver(caps: Partial<Capabilities> = {}): SettlementDriver & { settled:
     supports: (n: string) => n === NETWORK,
     buildRequirements: () => REQUIREMENTS,
     verify: () => Promise.resolve({ isValid: true }),
-    settle: () => {
-      self.settled += 1;
-      return Promise.resolve({ success: true, transaction: `0xtx${self.settled}`, network: NETWORK });
+    prepare: () => {
+      self.prepared += 1;
+      return Promise.resolve({ reference: `0xtx${self.prepared}`, raw: {} });
+    },
+    broadcast: (p: { reference: string }) => {
+      self.broadcast_ += 1;
+      return Promise.resolve({ success: true, transaction: p.reference, network: NETWORK });
     },
   };
   return self;
 }
 
-function ledger(): SettlementLedger & { entries: Map<string, LedgerEntry> } {
+function ledger(
+  fail: { record?: boolean; confirm?: boolean } = {},
+): SettlementLedger & { entries: Map<string, LedgerEntry> } {
   const entries = new Map<string, LedgerEntry>();
   return {
     id: "test-ledger",
     entries,
     lookup: (key) => Promise.resolve(entries.get(key)),
     record: (key, entry) => {
+      if (fail.record) return Promise.reject(new Error("ledger unavailable"));
+      entries.set(key, entry);
+      return Promise.resolve();
+    },
+    confirm: (key, entry) => {
+      if (fail.confirm) return Promise.reject(new Error("ledger unavailable"));
       entries.set(key, entry);
       return Promise.resolve();
     },
@@ -96,7 +111,88 @@ test("a ledger satisfies the guard and the first payout goes through", async () 
   });
 
   assert.equal(response.success, true);
-  assert.equal(d.settled, 1);
+  assert.equal(d.broadcast_, 1);
+});
+
+/**
+ * The ordering that makes a crash survivable: the record must be written before
+ * the irreversible step, never after. If it were written after, a crash in
+ * between would move funds with nothing to show for it, and the next run would
+ * pay again.
+ */
+test("the record is written BEFORE the broadcast", async () => {
+  const registry = new DriverRegistry(1);
+  const d = driver();
+  registry.register(d);
+
+  const order: string[] = [];
+  const l = ledger();
+  const tracked: SettlementLedger = {
+    ...l,
+    record: async (k, e) => {
+      order.push("record");
+      await l.record(k, e);
+    },
+  };
+  const broadcastingDriver: SettlementDriver = {
+    ...d,
+    broadcast: (p) => {
+      order.push("broadcast");
+      return d.broadcast(p);
+    },
+  };
+  const r2 = new DriverRegistry(1);
+  r2.register(broadcastingDriver);
+
+  await r2.settle(PAYLOAD, REQUIREMENTS, { idempotencyKey: KEY, ledger: tracked });
+  assert.deepEqual(order, ["record", "broadcast"]);
+});
+
+test("a failed record aborts before anything is broadcast", async () => {
+  const registry = new DriverRegistry(1);
+  const d = driver();
+  registry.register(d);
+
+  await assert.rejects(
+    registry.settle(PAYLOAD, REQUIREMENTS, { idempotencyKey: KEY, ledger: ledger({ record: true }) }),
+    /ledger unavailable/,
+  );
+  assert.equal(d.broadcast_, 0, "nothing may be broadcast once the record has failed");
+});
+
+/**
+ * The case that motivated the redesign. A settled payout must never be reported
+ * as a failure just because the follow-up bookkeeping did not land — the record
+ * already carries the transaction, so safety is intact.
+ */
+test("a failed confirm does not turn a settled payout into an error", async () => {
+  const registry = new DriverRegistry(1);
+  const d = driver();
+  registry.register(d);
+
+  const response = await registry.settle(PAYLOAD, REQUIREMENTS, {
+    idempotencyKey: KEY,
+    ledger: ledger({ confirm: true }),
+  });
+
+  assert.equal(response.success, true, "the money moved, so the result is success");
+  assert.equal(d.broadcast_, 1);
+});
+
+test("an unconfirmed attempt still blocks a re-pay", async () => {
+  const registry = new DriverRegistry(1);
+  const d = driver();
+  registry.register(d);
+
+  // A crash between broadcast and confirm leaves exactly this state.
+  const l = ledger();
+  await l.record(KEY, { status: "broadcasting", transaction: "0xmaybe" });
+
+  const response = await registry.settle(PAYLOAD, REQUIREMENTS, { idempotencyKey: KEY, ledger: l });
+
+  assert.equal(d.broadcast_, 0, "an unknown outcome must never be resolved by paying again");
+  assert.equal(response.errorReason, "AUTH_ALREADY_USED");
+  assert.equal(response.transaction, "0xmaybe", "and it hands back the hash to check");
 });
 
 test("a re-run settles nothing and reports already paid (I8)", async () => {
@@ -108,7 +204,7 @@ test("a re-run settles nothing and reports already paid (I8)", async () => {
   const first = await registry.settle(PAYLOAD, REQUIREMENTS, { idempotencyKey: KEY, ledger: l });
   const second = await registry.settle(PAYLOAD, REQUIREMENTS, { idempotencyKey: KEY, ledger: l });
 
-  assert.equal(d.settled, 1, "the driver must be reached exactly once");
+  assert.equal(d.broadcast_, 1, "the rail must be reached exactly once");
   assert.equal(second.success, true, "a repeat is a success, never a failure");
   assert.equal(second.errorReason, "AUTH_ALREADY_USED");
   assert.equal(second.transaction, first.transaction, "and it reports the original transaction");
@@ -126,7 +222,7 @@ test("a different payout on the same PR is not blocked by the first receipt", as
     ledger: l,
   });
 
-  assert.equal(d.settled, 2);
+  assert.equal(d.broadcast_, 2);
 });
 
 test("a rail with native replay protection needs no ledger", async () => {
@@ -136,15 +232,37 @@ test("a rail with native replay protection needs no ledger", async () => {
   assert.equal(response.success, true);
 });
 
-test("a failed settlement is not recorded, so a retry may still pay", async () => {
+/**
+ * Semantics changed with write-ahead, deliberately.
+ *
+ * A broadcast that returns an error does NOT mean the transaction never landed:
+ * the RPC may have accepted it and lost the response. Since the transaction was
+ * already signed and recorded, "failed" and "succeeded but unreported" are
+ * indistinguishable from here — so the record stands and a retry is blocked
+ * until a human checks the hash and bumps `round`.
+ *
+ * The cost is that a transient RPC failure needs human intervention. The
+ * alternative is auto-retrying a payout that may already have been made.
+ */
+test("a failed broadcast still leaves a record, because it may have landed", async () => {
   const registry = new DriverRegistry(1);
   const l = ledger();
   const failing: SettlementDriver = {
     ...driver(),
-    settle: () => Promise.resolve({ success: false, errorReason: "RPC_UNAVAILABLE" }),
+    broadcast: () => Promise.resolve({ success: false, errorReason: "RPC_UNAVAILABLE" }),
   };
   registry.register(failing);
 
-  await registry.settle(PAYLOAD, REQUIREMENTS, { idempotencyKey: KEY, ledger: l });
-  assert.equal(l.entries.size, 0, "recording a failure would strand the payout forever");
+  const response = await registry.settle(PAYLOAD, REQUIREMENTS, {
+    idempotencyKey: KEY,
+    ledger: l,
+  });
+
+  assert.equal(response.success, false);
+  assert.equal(l.entries.size, 1, "the signed transaction was recorded before broadcasting");
+  assert.equal(l.entries.get(KEY)?.status, "broadcasting", "and stays unconfirmed");
+
+  // The record blocks an automatic retry — the outcome is genuinely unknown.
+  const retry = await registry.settle(PAYLOAD, REQUIREMENTS, { idempotencyKey: KEY, ledger: l });
+  assert.equal(retry.errorReason, "AUTH_ALREADY_USED");
 });

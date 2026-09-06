@@ -428,24 +428,45 @@ class DriverRegistry {
         if (!driver.capabilities.nativeReplayProtection && !opts) {
             throw new XOpsError("NO_REPLAY_PROTECTION", `Driver ${driver.id} declares no replay protection, so it cannot settle without a ledger`, { driver: driver.id, tier: this.tier });
         }
-        if (opts) {
-            const prior = await opts.ledger.lookup(opts.idempotencyKey);
-            if (prior) {
-                // I8: a repeat is a success that settles nothing, never a failure.
-                return {
-                    success: true,
-                    network: r.network,
-                    ...(prior.transaction === undefined ? {} : { transaction: prior.transaction }),
-                    errorReason: "AUTH_ALREADY_USED",
-                };
-            }
+        if (!opts)
+            return driver.broadcast(await driver.prepare(p, r));
+        const { idempotencyKey: key, ledger } = opts;
+        const prior = await ledger.lookup(key);
+        if (prior) {
+            // I8: a repeat is a success that settles nothing, never a failure.
+            //
+            // This holds for `broadcasting` too. An attempt was recorded and signed,
+            // so the transaction may well be on-chain — paying again to "make sure"
+            // is the one unrecoverable mistake available here. Report the reference
+            // and let a human confirm; `round` exists to deliberately re-pay.
+            return {
+                success: true,
+                network: r.network,
+                ...(prior.transaction === undefined ? {} : { transaction: prior.transaction }),
+                errorReason: "AUTH_ALREADY_USED",
+            };
         }
-        const response = await driver.settle(p, r);
-        if (opts && response.success) {
-            await opts.ledger.record(opts.idempotencyKey, {
-                transaction: response.transaction,
-                settledAt: new Date().toISOString(),
-            });
+        // Sign first: this yields the transaction reference while nothing has moved.
+        const prepared = await driver.prepare(p, r);
+        // Write ahead. If this throws, the payout aborts having settled nothing —
+        // the cheap failure. Broadcasting unrecorded is the expensive one.
+        await ledger.record(key, { status: "broadcasting", transaction: prepared.reference });
+        const response = await driver.broadcast(prepared);
+        if (response.success) {
+            // Best-effort. The record already carries the reference, so losing this
+            // costs legibility, never safety — and it must not turn a settled payout
+            // into a reported failure.
+            try {
+                await ledger.confirm(key, {
+                    status: "settled",
+                    transaction: response.transaction ?? prepared.reference,
+                    settledAt: new Date().toISOString(),
+                });
+            }
+            catch (err) {
+                console.warn(`Settled ${prepared.reference} but could not confirm the ledger entry: ` +
+                    `${err instanceof Error ? err.message : String(err)}`);
+            }
         }
         return response;
     }

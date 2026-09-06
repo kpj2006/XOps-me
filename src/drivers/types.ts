@@ -33,13 +33,30 @@ export interface RequirementsContext {
   idempotencyKey: string;
 }
 
+/**
+ * A settlement that is signed but not yet broadcast.
+ *
+ * The split exists so the ledger can be written first. `reference` is the rail's
+ * identifier for the transaction — on EVM the hash, which is fixed at signing
+ * time and knowable before the network is touched. Recording it before broadcast
+ * is what removes the window where funds move with nothing to show for it.
+ */
+export interface PreparedSettlement {
+  reference: string;
+  /** Opaque to everything above the driver. */
+  raw: unknown;
+}
+
 export interface SettlementDriver {
   readonly id: string;
   readonly capabilities: Capabilities;
   supports(network: string, scheme: string): boolean;
   buildRequirements(ctx: RequirementsContext): PaymentRequirements;
   verify(p: PaymentPayload, r: PaymentRequirements): Promise<VerifyResult>;
-  settle(p: PaymentPayload, r: PaymentRequirements): Promise<SettlementResponse>;
+  /** Signs. Must not touch the rail — nothing here may move funds. */
+  prepare(p: PaymentPayload, r: PaymentRequirements): Promise<PreparedSettlement>;
+  /** Broadcasts what `prepare` produced. This is the irreversible step. */
+  broadcast(prepared: PreparedSettlement): Promise<SettlementResponse>;
 }
 
 /**

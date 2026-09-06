@@ -6,6 +6,7 @@ import type {
 } from "../../../src/core/types.js";
 import type {
   Capabilities,
+  PreparedSettlement,
   RequirementsContext,
   SettlementDriver,
   VerifyResult,
@@ -112,7 +113,32 @@ export class MockDriver implements SettlementDriver {
     return Promise.resolve({ isValid: true, payer: auth.from });
   }
 
-  settle(p: PaymentPayload, r: PaymentRequirements): Promise<SettlementResponse> {
+  /**
+   * Signing is pure here, as it is on a real rail: the reference is fixed before
+   * anything is broadcast, which is what lets the ledger be written first.
+   */
+  prepare(p: PaymentPayload, r: PaymentRequirements): Promise<PreparedSettlement> {
+    this.txCounter += 1;
+    return Promise.resolve({
+      reference: `mocktx-${this.txCounter}`,
+      raw: { payload: p, requirements: r },
+    });
+  }
+
+  broadcast(prepared: PreparedSettlement): Promise<SettlementResponse> {
+    const { payload: p, requirements: r } = prepared.raw as {
+      payload: PaymentPayload;
+      requirements: PaymentRequirements;
+    };
+    return this.settle(p, r, prepared.reference);
+  }
+
+  /** The rail's own behaviour, kept whole so the replay semantics stay readable. */
+  private settle(
+    p: PaymentPayload,
+    r: PaymentRequirements,
+    reference: string,
+  ): Promise<SettlementResponse> {
     this.settleCalls += 1;
 
     const auth = readAuthorization(p);
@@ -145,13 +171,11 @@ export class MockDriver implements SettlementDriver {
     this.balances.set(auth.from, this.balanceOf(auth.from) - value);
     this.balances.set(auth.to, this.balanceOf(auth.to) + value);
 
-    this.txCounter += 1;
-    const tx = `mocktx-${this.txCounter}`;
-    this.usedNonces.set(auth.nonce, tx);
+    this.usedNonces.set(auth.nonce, reference);
 
     return Promise.resolve({
       success: true,
-      transaction: tx,
+      transaction: reference,
       network: r.network,
       payer: auth.from,
     });

@@ -13,21 +13,40 @@
  * Core defines only the shape. It never learns where the record is kept.
  */
 
+/**
+ * `broadcasting` — signed and recorded, but the outcome is unknown. Written
+ * BEFORE the rail is touched, so it survives a crash mid-broadcast.
+ * `settled` — confirmed on the rail.
+ */
+export type LedgerStatus = "broadcasting" | "settled";
+
 export interface LedgerEntry {
-  /** Rail transaction identifier, when the settlement produced one. */
+  status: LedgerStatus;
+  /**
+   * Rail transaction identifier. Known at signing time, before broadcast —
+   * that is what makes writing ahead possible.
+   */
   transaction?: string | undefined;
-  /** Human-followable link to the settlement. */
-  explorerUrl?: string | undefined;
   /** When the entry was written, ISO 8601. */
   settledAt?: string | undefined;
 }
 
 export interface SettlementLedger {
   readonly id: string;
-  /** A prior settlement for this key, or undefined if there is none. */
+  /** A prior attempt for this key, or undefined if there is none. */
   lookup(key: string): Promise<LedgerEntry | undefined>;
-  /** Records a settlement so a later run finds it instead of paying again. */
+  /**
+   * Writes the intent to settle, BEFORE broadcasting. A failure here must
+   * abort the payout: nothing has moved yet, so aborting is free, whereas
+   * broadcasting unrecorded risks paying twice on the next run.
+   */
   record(key: string, entry: LedgerEntry): Promise<void>;
+  /**
+   * Upgrades a recorded attempt to `settled`. Best-effort by design — the
+   * record already carries the transaction, so losing this only costs
+   * legibility, never safety.
+   */
+  confirm(key: string, entry: LedgerEntry): Promise<void>;
 }
 
 /**

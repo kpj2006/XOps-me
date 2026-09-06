@@ -20,14 +20,15 @@ export interface Receipt extends LedgerEntry {
 }
 
 export function formatReceipt(receipt: Receipt): string {
+  const broadcasting = receipt.status === "broadcasting";
+
   const lines = [
     `<!-- ${MARKER}:v1 key=${receipt.key} -->`,
-    "**XOps — payout settled**",
+    broadcasting ? "**XOps — payout broadcasting**" : "**XOps — payout settled**",
     "",
   ];
 
   if (receipt.transaction) lines.push(`- Transaction: \`${receipt.transaction}\``);
-  if (receipt.explorerUrl) lines.push(`- Explorer: ${receipt.explorerUrl}`);
   if (receipt.settledAt) lines.push(`- Settled: ${receipt.settledAt}`);
 
   lines.push(
@@ -35,6 +36,16 @@ export function formatReceipt(receipt: Receipt): string {
     "This receipt is the idempotency record. While it is present, a re-run of",
     "this payout settles nothing and reports it as already paid.",
   );
+
+  if (broadcasting) {
+    lines.push(
+      "",
+      "It was written **before** broadcasting, so the transaction above may or may",
+      "not have landed. Check it on a block explorer. If it never landed, re-run",
+      "with `round` bumped to deliberately pay again — XOps will not decide that",
+      "for you, because paying twice cannot be undone.",
+    );
+  }
 
   return lines.join("\n");
 }
@@ -66,12 +77,22 @@ export function isTrustedReceiptAuthor(comment: CommentLike): boolean {
 }
 
 /** Finds a trusted receipt for `key` among comments. Pure, so it is testable. */
+const TRANSACTION_PATTERN = /^- Transaction: `([^`]+)`/m;
+
 export function findReceipt(comments: readonly CommentLike[], key: string): Receipt | undefined {
   for (const comment of comments) {
     const body = comment.body ?? "";
     if (parseReceiptKey(body) !== key) continue;
     if (!isTrustedReceiptAuthor(comment)) continue;
-    return { key };
+
+    const transaction = TRANSACTION_PATTERN.exec(body)?.[1];
+    return {
+      key,
+      // An unconfirmed record still blocks a re-pay. Reading it as anything
+      // weaker would reintroduce the double-payment window it exists to close.
+      status: body.includes("payout settled") ? "settled" : "broadcasting",
+      ...(transaction === undefined ? {} : { transaction }),
+    };
   }
   return undefined;
 }
@@ -132,8 +153,8 @@ export class PullRequestReceiptLedger implements SettlementLedger {
     );
   }
 
-  async record(key: string, entry: LedgerEntry): Promise<void> {
-    const response = await fetch(this.base(), {
+  private async post(key: string, entry: LedgerEntry): Promise<Response> {
+    return fetch(this.base(), {
       method: "POST",
       headers: {
         accept: "application/vnd.github+json",
@@ -144,10 +165,34 @@ export class PullRequestReceiptLedger implements SettlementLedger {
       },
       body: JSON.stringify({ body: formatReceipt({ key, ...entry }) }),
     });
+  }
+
+  /**
+   * Called before broadcasting. Throwing here is the safe outcome: nothing has
+   * moved, so the payout simply does not happen and can be retried cleanly.
+   */
+  async record(key: string, entry: LedgerEntry): Promise<void> {
+    const response = await this.post(key, entry);
     if (!response.ok) {
       throw new Error(
-        `Failed to write the receipt for ${key}: GitHub API ${response.status}. ` +
-          "The payout settled but is unrecorded, so a re-run would pay again.",
+        `Refusing to broadcast: could not record the payout for ${key} ` +
+          `(GitHub API ${response.status}). Nothing was settled.`,
+      );
+    }
+  }
+
+  /**
+   * Called after a successful broadcast. Deliberately does not throw — the
+   * record written by `record()` already carries the transaction, so a failure
+   * here costs legibility only, and turning a settled payout into a reported
+   * failure would be far worse than a missing confirmation.
+   */
+  async confirm(key: string, entry: LedgerEntry): Promise<void> {
+    const response = await this.post(key, entry);
+    if (!response.ok) {
+      console.warn(
+        `Payout ${key} settled, but the confirmation comment failed ` +
+          `(GitHub API ${response.status}). The earlier record still carries the transaction.`,
       );
     }
   }

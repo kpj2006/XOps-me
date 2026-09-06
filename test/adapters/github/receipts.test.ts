@@ -12,12 +12,12 @@ const KEY = "xops:v1|github:kpj2006/demo-XOps#refs/pull/1|0xdead|eip155:11155111
 const BOT = { user: { type: "Bot", login: "github-actions[bot]" } };
 
 test("a formatted receipt round-trips its key", () => {
-  const body = formatReceipt({ key: KEY, transaction: "0xabc", settledAt: "2026-09-06T00:00:00Z" });
+  const body = formatReceipt({ key: KEY, status: "settled", transaction: "0xabc", settledAt: "2026-09-06T00:00:00Z" });
   assert.equal(parseReceiptKey(body), KEY);
 });
 
 test("the key is machine-readable but invisible in the rendered body", () => {
-  const body = formatReceipt({ key: KEY });
+  const body = formatReceipt({ key: KEY, status: "settled" });
   assert.ok(body.startsWith("<!--"), "the marker is an HTML comment");
   assert.ok(body.includes("payout settled"), "and there is something for a human to read");
 });
@@ -32,10 +32,10 @@ test("finds a receipt among unrelated conversation", () => {
   const comments = [
     { body: "nice work", ...BOT },
     { body: "/send 0xdead 10 USDC", author_association: "OWNER" },
-    { body: formatReceipt({ key: KEY, transaction: "0xabc" }), ...BOT },
+    { body: formatReceipt({ key: KEY, status: "settled", transaction: "0xabc" }), ...BOT },
     { body: "merging", author_association: "OWNER" },
   ];
-  assert.deepEqual(findReceipt(comments, KEY), { key: KEY });
+  assert.deepEqual(findReceipt(comments, KEY), { key: KEY, status: "settled", transaction: "0xabc" });
 });
 
 /**
@@ -44,14 +44,14 @@ test("finds a receipt among unrelated conversation", () => {
  */
 test("a receipt for a different key does not match", () => {
   const other = KEY.replace("refs/pull/1", "refs/pull/2");
-  const comments = [{ body: formatReceipt({ key: other }), ...BOT }];
+  const comments = [{ body: formatReceipt({ key: other, status: "settled" }), ...BOT }];
   assert.equal(findReceipt(comments, KEY), undefined);
-  assert.deepEqual(findReceipt(comments, other), { key: other });
+  assert.deepEqual(findReceipt(comments, other), { key: other, status: "settled" });
 });
 
 test("a round differences makes it a different payout", () => {
   const rerun = `${KEY.slice(0, -1)}1`;
-  const comments = [{ body: formatReceipt({ key: KEY }), ...BOT }];
+  const comments = [{ body: formatReceipt({ key: KEY, status: "settled" }), ...BOT }];
   assert.equal(findReceipt(comments, rerun), undefined, "round 1 is a deliberate re-pay");
 });
 
@@ -65,7 +65,7 @@ test("only bots and people who can already spend are believed", () => {
 });
 
 test("a contributor cannot block a payout by forging a receipt", () => {
-  const forged = [{ body: formatReceipt({ key: KEY }), author_association: "CONTRIBUTOR" }];
+  const forged = [{ body: formatReceipt({ key: KEY, status: "settled" }), author_association: "CONTRIBUTOR" }];
   assert.equal(findReceipt(forged, KEY), undefined);
 });
 
