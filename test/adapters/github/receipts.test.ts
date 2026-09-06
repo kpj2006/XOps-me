@@ -69,6 +69,29 @@ test("a contributor cannot block a payout by forging a receipt", () => {
   assert.equal(findReceipt(forged, KEY), undefined);
 });
 
+/**
+ * A settled payout leaves both comments. Returning the earlier one would report
+ * a finished payout as still broadcasting and send someone to an explorer for
+ * nothing.
+ */
+test("a later confirmation beats the earlier broadcasting record", () => {
+  const comments = [
+    { body: formatReceipt({ key: KEY, status: "broadcasting", transaction: "0xabc" }), ...BOT },
+    { body: "unrelated chatter", ...BOT },
+    { body: formatReceipt({ key: KEY, status: "settled", transaction: "0xabc" }), ...BOT },
+  ];
+  assert.equal(findReceipt(comments, KEY)?.status, "settled");
+});
+
+test("an unconfirmed record alone still reports broadcasting, and still blocks", () => {
+  const comments = [
+    { body: formatReceipt({ key: KEY, status: "broadcasting", transaction: "0xabc" }), ...BOT },
+  ];
+  const found = findReceipt(comments, KEY);
+  assert.equal(found?.status, "broadcasting");
+  assert.equal(found?.transaction, "0xabc", "the hash is what a human needs to check");
+});
+
 test("an empty or bodyless comment is skipped rather than throwing", () => {
   assert.equal(findReceipt([{ body: null }, { body: undefined }, {}], KEY), undefined);
 });

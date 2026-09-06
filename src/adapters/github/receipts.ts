@@ -79,22 +79,35 @@ export function isTrustedReceiptAuthor(comment: CommentLike): boolean {
 /** Finds a trusted receipt for `key` among comments. Pure, so it is testable. */
 const TRANSACTION_PATTERN = /^- Transaction: `([^`]+)`/m;
 
+/**
+ * A settled payout leaves two comments — the pre-broadcast record and the
+ * confirmation. Both carry the same key, so the whole thread is scanned and the
+ * strongest status wins. Returning the first match would report a completed
+ * payout as still broadcasting, which is safe but wrong, and would send someone
+ * to a block explorer for no reason.
+ */
 export function findReceipt(comments: readonly CommentLike[], key: string): Receipt | undefined {
+  let found: Receipt | undefined;
+
   for (const comment of comments) {
     const body = comment.body ?? "";
     if (parseReceiptKey(body) !== key) continue;
     if (!isTrustedReceiptAuthor(comment)) continue;
 
     const transaction = TRANSACTION_PATTERN.exec(body)?.[1];
-    return {
+    const receipt: Receipt = {
       key,
       // An unconfirmed record still blocks a re-pay. Reading it as anything
       // weaker would reintroduce the double-payment window it exists to close.
       status: body.includes("payout settled") ? "settled" : "broadcasting",
       ...(transaction === undefined ? {} : { transaction }),
     };
+
+    if (receipt.status === "settled") return receipt;
+    found ??= receipt;
   }
-  return undefined;
+
+  return found;
 }
 
 export interface PullRequestRef {
