@@ -22,6 +22,19 @@ inputs:
     description: "Decimals for the asset, used to convert a `/send` amount to atomic units."
     required: false
     default: "6"
+  repo:
+    description: "Overrides GITHUB_REPOSITORY in the intent source."
+    required: false
+  ref:
+    description: >
+      Overrides GITHUB_REF in the intent source, and therefore in the idempotency key.
+      Set this on issue_comment events: GITHUB_REF points at the default branch there,
+      and refs/pull/N/merge changes on every push, so neither identifies a payout stably.
+      `refs/pull/<number>` does.
+    required: false
+  actor:
+    description: "Overrides GITHUB_ACTOR in the intent source."
+    required: false
   recipient:
     description: "Opaque payout identity. An inline address, or anything a resolver understands."
     required: false
