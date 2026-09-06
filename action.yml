@@ -50,9 +50,13 @@ inputs:
     required: false
     default: "eip155:11155111"
   scheme:
-    description: "x402 settlement scheme."
+    description: >
+      Settlement scheme. `allowance` is the only one implemented — it settles via
+      Safe's AllowanceModule. Was `exact` (x402 over EIP-3009) before the pivot;
+      that default shipped with no driver behind it, so every real settlement
+      failed with DRIVER_NOT_FOUND.
     required: false
-    default: "exact"
+    default: "allowance"
   round:
     description: "Bump to deliberately re-pay the same recipient for the same ref."
     required: false
