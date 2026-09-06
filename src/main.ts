@@ -1,4 +1,6 @@
 import { writeOutputs } from "./adapters/github/outputs.js";
+import { assertMaintainer, parseSendCommand } from "./adapters/github/trigger.js";
+import { toAtomic } from "./core/amount.js";
 import { DEFAULT_SETTLEMENT_MODE } from "./core/defaults.js";
 import { XOpsError } from "./core/errors.js";
 import { canonical, keyFor } from "./core/idempotency.js";
@@ -11,14 +13,39 @@ function input(name: string): string | undefined {
 }
 
 async function run(): Promise<number> {
+  // L0 TRIGGER. A comment body, when given, is the source of truth for who gets
+  // paid and how much — it beats the workflow's static inputs, because a person
+  // typed it deliberately.
+  const body = input("comment");
+  const command = body === undefined ? undefined : parseSendCommand(body);
+
+  if (body !== undefined && command === undefined) {
+    console.log("no /send command in this comment — nothing to do.");
+    writeOutputs({ STATUS: "skipped", ERROR_CODE: "" });
+    return 0;
+  }
+
+  if (command) {
+    // L1 POLICY, offline, before anything else happens.
+    assertMaintainer(input("actor_association"));
+
+    const decimals = Number(input("decimals") ?? "6");
+    console.log(
+      `/send parsed: recipient=${command.recipient} amount=${command.amount}` +
+        `${command.asset ? ` asset=${command.asset}` : ""} (decimals=${decimals})`,
+    );
+  }
+
+  const decimals = Number(input("decimals") ?? "6");
+
   const intent = parseIntent({
     platform: "github",
     repo: input("repo") ?? process.env["GITHUB_REPOSITORY"],
     ref: input("ref") ?? process.env["GITHUB_REF"],
     actor: input("actor") ?? process.env["GITHUB_ACTOR"],
-    recipient: input("recipient"),
-    amount: input("amount"),
-    asset: input("asset"),
+    recipient: command?.recipient ?? input("recipient"),
+    amount: command ? toAtomic(command.amount, decimals) : input("amount"),
+    asset: command?.asset ?? input("asset"),
     network: input("network"),
     scheme: input("scheme"),
     round: input("round"),

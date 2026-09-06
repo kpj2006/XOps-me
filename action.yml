@@ -6,12 +6,28 @@ branding:
   color: "purple"
 
 inputs:
+  comment:
+    description: >
+      A PR comment body to read a `/send <recipient> <amount> [asset]` command from.
+      When given, the command overrides the `recipient`, `amount` and `asset` inputs,
+      and the amount is treated as human decimal rather than atomic units. A comment
+      with no `/send` line reports STATUS=skipped and does nothing.
+    required: false
+  actor_association:
+    description: >
+      GitHub's author_association for the comment author. `/send` is denied unless
+      this is OWNER, MEMBER or COLLABORATOR. Required whenever `comment` is used.
+    required: false
+  decimals:
+    description: "Decimals for the asset, used to convert a `/send` amount to atomic units."
+    required: false
+    default: "6"
   recipient:
     description: "Opaque payout identity. An inline address, or anything a resolver understands."
-    required: true
+    required: false
   amount:
     description: "Atomic units, as a string. USDC has 6 decimals, so 2500000 is 2.50 USDC."
-    required: true
+    required: false
   asset:
     description: "Opaque asset identifier from the chain registry."
     required: false
@@ -39,7 +55,7 @@ outputs:
   EXPLORER_URL:
     description: "Human-readable link to the settlement."
   STATUS:
-    description: "dry-run | settled | already-paid | error"
+    description: "dry-run | settled | already-paid | skipped | error"
   ERROR_CODE:
     description: "Code from the XOps error taxonomy, empty on success."
   IDEMPOTENCY_KEY:

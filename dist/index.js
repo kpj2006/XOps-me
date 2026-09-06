@@ -30,15 +30,6 @@ function writeOutputs(values) {
         (0,external_node_fs_namespaceObject.appendFileSync)(file, block, "utf8");
 }
 
-;// CONCATENATED MODULE: ./src/core/defaults.ts
-/** I5. Real settlement is always an explicit opt-in. */
-const DEFAULT_SETTLEMENT_MODE = "dry-run";
-/** Kill switch default. Honored before policy evaluation. */
-const DEFAULT_SETTLEMENT_ENABLED = true;
-/** Clock-skew allowance and authorization window, in seconds. */
-const VALID_AFTER_SKEW_SECONDS = 60;
-const VALID_BEFORE_WINDOW_SECONDS = 900;
-
 ;// CONCATENATED MODULE: ./src/core/errors.ts
 const ERROR_CODES = (/* unused pure expression or super */ null && ([
     "AUTH_ALREADY_USED",
@@ -180,6 +171,107 @@ function isErrorCode(value) {
 function isSuccessCode(code) {
     return ERRORS[code].success;
 }
+
+;// CONCATENATED MODULE: ./src/adapters/github/trigger.ts
+
+const SEND_LINE = /^\s*\/send\b(.*)$/;
+/** `10`, `2.5`, or `10usdc` with the symbol run onto the number. */
+const AMOUNT_WITH_ASSET = /^([0-9]+(?:\.[0-9]+)?)\s*([a-zA-Z][a-zA-Z0-9]{0,11})?$/;
+const ASSET = /^[a-zA-Z][a-zA-Z0-9]{0,11}$/;
+const USAGE = "usage: `/send <recipient> <amount> [asset]` — e.g. `/send 0xabc…def 10 USDC`";
+/**
+ * Finds a `/send` command anywhere in a comment body.
+ *
+ * Returns `undefined` when the comment simply isn't a command — that is the
+ * common case and not an error. Throws only when a line *is* a `/send` but
+ * cannot be read, because silently misreading an amount is far worse than
+ * refusing it.
+ */
+function parseSendCommand(body) {
+    for (const line of body.split(/\r?\n/)) {
+        const match = SEND_LINE.exec(line);
+        if (!match)
+            continue;
+        const tokens = (match[1] ?? "").trim().split(/\s+/).filter(Boolean);
+        if (tokens.length < 2) {
+            throw new Error(`\`/send\` needs a recipient and an amount. ${USAGE}`);
+        }
+        if (tokens.length > 3) {
+            throw new Error(`\`/send\` got ${tokens.length} arguments and expected at most 3. ${USAGE}`);
+        }
+        const [recipient, second, third] = tokens;
+        const amountMatch = AMOUNT_WITH_ASSET.exec(second);
+        if (!amountMatch) {
+            throw new Error(`"${second}" is not a valid amount. ${USAGE}`);
+        }
+        const [, amount, attachedAsset] = amountMatch;
+        if (attachedAsset && third) {
+            throw new Error(`the asset was given twice, as "${attachedAsset}" and "${third}". ${USAGE}`);
+        }
+        const asset = attachedAsset ?? third;
+        if (asset !== undefined && !ASSET.test(asset)) {
+            throw new Error(`"${asset}" is not a valid asset symbol. ${USAGE}`);
+        }
+        return { recipient, amount, asset };
+    }
+    return undefined;
+}
+/**
+ * Author associations GitHub reports for people who can be trusted to spend the
+ * project's money. Everything else — CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR, NONE —
+ * is denied, so a drive-by commenter cannot trigger a payout to themselves.
+ *
+ * This is L1 POLICY and it is evaluated offline, before anything reaches a driver.
+ */
+const MAINTAINER_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+function assertMaintainer(association) {
+    const value = (association ?? "").trim().toUpperCase();
+    if (!MAINTAINER_ASSOCIATIONS.has(value)) {
+        throw new XOpsError("POLICY_DENIED", `\`/send\` is restricted to maintainers. Author association was "${association ?? "unknown"}".`, { association: association ?? null });
+    }
+}
+
+;// CONCATENATED MODULE: ./src/core/amount.ts
+// Human amounts in, atomic units out. Pure string arithmetic — floats are not
+// allowed anywhere near money, and `parseFloat("0.1")` is exactly why.
+const DECIMAL = /^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/;
+/**
+ * Converts a human-typed decimal amount into atomic units.
+ *
+ * `toAtomic("10", 6)` is `"10000000"`. `toAtomic("2.5", 6)` is `"2500000"`.
+ *
+ * `decimals` is passed in, never inferred — the asset registry owns that value
+ * (`REFERENCES.md`: resolve decimals from the registry, never infer). Getting it
+ * wrong is a 10^n error in someone's payout, so this throws rather than guesses.
+ */
+function toAtomic(human, decimals) {
+    if (!Number.isInteger(decimals) || decimals < 0 || decimals > 36) {
+        throw new Error(`decimals must be an integer between 0 and 36, got "${decimals}"`);
+    }
+    const value = human.trim();
+    if (!DECIMAL.test(value)) {
+        throw new Error(`amount must be a positive decimal number without separators, got "${human}"`);
+    }
+    const [whole, fraction = ""] = value.split(".");
+    if (fraction.length > decimals) {
+        throw new Error(`amount "${human}" has ${fraction.length} decimal places, but the asset has only ${decimals}`);
+    }
+    // Strip leading zeros but always leave one digit behind.
+    const atomic = `${whole}${fraction.padEnd(decimals, "0")}`.replace(/^0+(?=[0-9])/, "");
+    if (/^0+$/.test(atomic)) {
+        throw new Error(`amount must be greater than zero, got "${human}"`);
+    }
+    return atomic;
+}
+
+;// CONCATENATED MODULE: ./src/core/defaults.ts
+/** I5. Real settlement is always an explicit opt-in. */
+const DEFAULT_SETTLEMENT_MODE = "dry-run";
+/** Kill switch default. Honored before policy evaluation. */
+const DEFAULT_SETTLEMENT_ENABLED = true;
+/** Clock-skew allowance and authorization window, in seconds. */
+const VALID_AFTER_SKEW_SECONDS = 60;
+const VALID_BEFORE_WINDOW_SECONDS = 900;
 
 ;// CONCATENATED MODULE: ./src/core/idempotency.ts
 /**
@@ -373,18 +465,38 @@ class ResolverChain {
 
 
 
+
+
 function input(name) {
     return process.env[`INPUT_${name.toUpperCase().replace(/ /g, "_")}`];
 }
 async function run() {
+    // L0 TRIGGER. A comment body, when given, is the source of truth for who gets
+    // paid and how much — it beats the workflow's static inputs, because a person
+    // typed it deliberately.
+    const body = input("comment");
+    const command = body === undefined ? undefined : parseSendCommand(body);
+    if (body !== undefined && command === undefined) {
+        console.log("no /send command in this comment — nothing to do.");
+        writeOutputs({ STATUS: "skipped", ERROR_CODE: "" });
+        return 0;
+    }
+    if (command) {
+        // L1 POLICY, offline, before anything else happens.
+        assertMaintainer(input("actor_association"));
+        const decimals = Number(input("decimals") ?? "6");
+        console.log(`/send parsed: recipient=${command.recipient} amount=${command.amount}` +
+            `${command.asset ? ` asset=${command.asset}` : ""} (decimals=${decimals})`);
+    }
+    const decimals = Number(input("decimals") ?? "6");
     const intent = parseIntent({
         platform: "github",
         repo: input("repo") ?? process.env["GITHUB_REPOSITORY"],
         ref: input("ref") ?? process.env["GITHUB_REF"],
         actor: input("actor") ?? process.env["GITHUB_ACTOR"],
-        recipient: input("recipient"),
-        amount: input("amount"),
-        asset: input("asset"),
+        recipient: command?.recipient ?? input("recipient"),
+        amount: command ? toAtomic(command.amount, decimals) : input("amount"),
+        asset: command?.asset ?? input("asset"),
         network: input("network"),
         scheme: input("scheme"),
         round: input("round"),
