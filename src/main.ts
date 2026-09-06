@@ -1,5 +1,7 @@
 import { readInput as input } from "./adapters/github/inputs.js";
 import { writeOutputs } from "./adapters/github/outputs.js";
+import { PullRequestReceiptLedger } from "./adapters/github/receipts.js";
+import { SafeAllowanceDriver } from "./drivers/safe-allowance/driver.js";
 import { assertMaintainer, parseSendCommand } from "./adapters/github/trigger.js";
 import { toAtomic } from "./core/amount.js";
 import { DEFAULT_SETTLEMENT_MODE } from "./core/defaults.js";
@@ -65,10 +67,67 @@ async function run(): Promise<number> {
     return 0;
   }
 
-  // No settlement driver ships yet. Registry resolution is the honest failure.
-  const registry = new DriverRegistry(0);
-  registry.resolve(intent.network, intent.scheme);
-  return 0;
+  const required = (name: string): string => {
+    const value = input(name);
+    if (!value) throw new Error(`Real settlement needs the "${name}" input`);
+    return value;
+  };
+
+  const driver = new SafeAllowanceDriver({
+    network: intent.network,
+    chainId: BigInt(required("chain_id")),
+    rpcUrl: required("rpc_url"),
+    moduleAddress: required("allowance_module"),
+    safeAddress: required("safe"),
+    tokenAddress: required("token"),
+    delegatePrivateKey: required("delegate_key"),
+  });
+
+  /**
+   * Tier 1, not 0: CI holds the delegate key, so this is an adopter-operated
+   * process with its own credentials. I3 would reject it at tier 0, correctly —
+   * and I9 still applies here, which is why the ledger below is not optional.
+   */
+  const registry = new DriverRegistry(1);
+  registry.register(driver);
+
+  const ledger = new PullRequestReceiptLedger({
+    repo:
+      intent.source.platform === "github" ? intent.source.repo : intent.source.project,
+    number: Number(required("pr")),
+    token: required("github_token"),
+  });
+
+  const requirements = registry.buildRequirements({ intent, target, idempotencyKey });
+  const verified = await driver.verify(
+    { x402Version: 2, scheme: intent.scheme, network: intent.network, payload: {} },
+    requirements,
+  );
+  if (!verified.isValid) {
+    throw new XOpsError(verified.reason ?? "POLICY_DENIED", "The payout failed verification");
+  }
+
+  const response = await registry.settle(
+    { x402Version: 2, scheme: intent.scheme, network: intent.network, payload: {} },
+    requirements,
+    { idempotencyKey, ledger },
+  );
+
+  const alreadyPaid = response.errorReason === "AUTH_ALREADY_USED";
+  console.log(
+    alreadyPaid
+      ? `already paid — ${response.transaction ?? "no transaction recorded"}`
+      : `settled: ${response.transaction ?? "(no transaction)"}`,
+  );
+
+  writeOutputs({
+    STATUS: response.success ? (alreadyPaid ? "already-paid" : "settled") : "error",
+    TX_HASH: response.transaction ?? "",
+    IDEMPOTENCY_KEY: idempotencyKey,
+    ERROR_CODE: response.success ? "" : (response.errorReason ?? ""),
+  });
+
+  return response.success ? 0 : 1;
 }
 
 run().then(

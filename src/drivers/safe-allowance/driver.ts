@@ -119,13 +119,38 @@ export class SafeAllowanceDriver implements SettlementDriver {
       signature: "0x",
     });
 
-    const [nonceHex, feeHex, tipHex] = await Promise.all([
+    const [pendingHex, latestHex, feeHex, tipHex] = await Promise.all([
       this.rpc.hex("eth_getTransactionCount", [this.delegate, "pending"]),
+      this.rpc.hex("eth_getTransactionCount", [this.delegate, "latest"]),
       this.rpc.hex("eth_gasPrice", []),
-      this.rpc
-        .hex("eth_maxPriorityFeePerGas", [])
-        .catch(() => toHex(1_500_000_000n)),
+      this.rpc.hex("eth_maxPriorityFeePerGas", []).catch(() => toHex(1_500_000_000n)),
     ]);
+
+    const pending = fromHex(pendingHex);
+    const latest = fromHex(latestHex);
+
+    /**
+     * A transaction already in flight owns nonce `latest`. Signing `pending`
+     * would queue behind it, and if the in-flight one never lands, every payout
+     * after it is stuck too — silently, since each looks fine on its own.
+     *
+     * Refuse instead. This does not unstick anything, but it stops the queue
+     * growing and names the nonce a human has to clear. Automatic replacement is
+     * deliberately not attempted: the in-flight transaction may be a different
+     * payout that is about to land, and replacing it would mean one contributor
+     * silently never gets paid.
+     */
+    if (pending > latest) {
+      throw Object.assign(
+        new Error(
+          `Delegate ${this.delegate} has ${pending - latest} transaction(s) in flight ` +
+            `(nonce ${latest} is unconfirmed). Refusing to queue another payout behind it. ` +
+            "Wait for it to confirm, or replace it from the delegate wallet using nonce " +
+            `${latest} with a higher fee.`,
+        ),
+        { code: "RPC_UNAVAILABLE" satisfies ErrorCode },
+      );
+    }
 
     const gasPrice = fromHex(feeHex);
     const tip = fromHex(tipHex);
@@ -150,7 +175,7 @@ export class SafeAllowanceDriver implements SettlementDriver {
     const signed = signTransaction(
       {
         chainId: this.config.chainId,
-        nonce: fromHex(nonceHex),
+        nonce: pending,
         maxPriorityFeePerGas: tip,
         maxFeePerGas: gasPrice * 2n + tip,
         gasLimit,

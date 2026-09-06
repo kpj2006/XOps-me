@@ -58,9 +58,39 @@ inputs:
     required: false
     default: "0"
   mode:
-    description: "dry-run | facilitator | self | auto. Real settlement is always explicit."
+    description: "dry-run | self. Real settlement is always explicit."
     required: false
     default: "dry-run"
+
+  # Everything below is needed only when mode is not dry-run.
+  rpc_url:
+    description: "JSON-RPC endpoint for the network."
+    required: false
+  chain_id:
+    description: "Numeric chain id, e.g. 11155111 for Ethereum Sepolia."
+    required: false
+  safe:
+    description: "Address of the Safe holding the funds."
+    required: false
+  token:
+    description: "ERC-20 being paid out."
+    required: false
+  allowance_module:
+    description: "Safe AllowanceModule deployment address for this chain."
+    required: false
+  delegate_key:
+    description: >
+      Private key of the delegate the spending limit was granted to. Pass from a
+      secret, never inline. It can only spend within the allowance and cannot
+      change the recipient of an existing one — but it CAN send the allowance
+      anywhere, so size the period cap to what you can afford to lose.
+    required: false
+  pr:
+    description: "Pull request number whose comments hold the payout receipts."
+    required: false
+  github_token:
+    description: "Token used to read and write the receipt comment."
+    required: false
 
 outputs:
   TX_HASH:
