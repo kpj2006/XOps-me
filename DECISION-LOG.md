@@ -395,7 +395,33 @@ won't accept a single chain.
 
 ---
 
-## 6f. 🔴 VERIFIED — the allowance model LOSES idempotency. Unsolved.
+## 6f. ✅ RESOLVED (2026-09-06) — the allowance model loses idempotency; a ledger restores it
+
+> **Fix shipped.** `core/ledger.ts` defines `SettlementLedger`;
+> `adapters/github/receipts.ts` implements it against the PR's own comments; the
+> registry guard now applies at **every** tier. 75 tests green. The analysis
+> below is kept because it explains why the design is shaped this way.
+>
+> - **The receipt comment is the ledger.** No server — GitHub holds the state,
+>   keyed by the canonical idempotency key, carried in an HTML comment so it is
+>   exact but invisible when rendered.
+> - **A repeat is a success, not a failure** (I8): the registry returns
+>   `AUTH_ALREADY_USED` with the original transaction and never reaches the driver.
+> - **A failed settlement is not recorded**, so a genuine retry can still pay.
+> - **Forged receipts are ignored** — only bots and OWNER/MEMBER/COLLABORATOR are
+>   believed, so a contributor cannot block someone's payout with a comment.
+> - **I9 was widened to all tiers.** It read `tier === 0 && !nativeReplayProtection`,
+>   so a driver that double-pays became settleable just by constructing the registry
+>   at tier 1 — silently. A tier says who operates the process; it says nothing about
+>   whether a retry pays twice. `AGENTS.md` I9 updated to match.
+> - **Remaining risk: the lookup is check-then-act.** Mitigated with a
+>   `concurrency: xops-payout-<pr>` group and `cancel-in-progress: false` —
+>   cancelling mid-settlement is how a payout happens without its receipt.
+> - **Still to do:** if `record()` fails after a successful transfer, the payout is
+>   unrecorded and a re-run would pay again. It throws loudly rather than passing
+>   silently, but there is no automatic repair.
+
+### Original analysis
 
 Read directly from `allowances/contracts/AllowanceModule.sol` (2026-09-06).
 

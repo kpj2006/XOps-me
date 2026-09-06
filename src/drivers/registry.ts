@@ -1,4 +1,5 @@
 import { XOpsError } from "../core/errors.js";
+import type { SettlementLedger } from "../core/ledger.js";
 import type { PaymentPayload, PaymentRequirements, SettlementResponse } from "../core/types.js";
 import type {
   RequirementsContext,
@@ -69,16 +70,53 @@ export class DriverRegistry {
     return this.resolve(r.network, r.scheme).verify(p, r);
   }
 
-  /** I9: refuse before the driver is reached if it declares no exactly-once guarantee. */
-  async settle(p: PaymentPayload, r: PaymentRequirements): Promise<SettlementResponse> {
+  /**
+   * I9: refuse before the driver is reached unless exactly-once is guaranteed by
+   * something — the rail itself, or a ledger standing in for it.
+   *
+   * This is deliberately checked at EVERY tier. It used to apply only at tier 0,
+   * which meant a driver with no replay protection became settleable simply by
+   * constructing the registry at tier 1 — silently, with double payment as the
+   * failure mode. A tier says who operates the process and what credentials it
+   * holds; it says nothing about whether a retry pays twice.
+   */
+  async settle(
+    p: PaymentPayload,
+    r: PaymentRequirements,
+    opts?: { idempotencyKey: string; ledger: SettlementLedger },
+  ): Promise<SettlementResponse> {
     const driver = this.resolve(r.network, r.scheme);
-    if (this.tier === 0 && !driver.capabilities.nativeReplayProtection) {
+
+    if (!driver.capabilities.nativeReplayProtection && !opts) {
       throw new XOpsError(
         "NO_REPLAY_PROTECTION",
-        `Driver ${driver.id} declares no replay protection and cannot settle in Tier 0`,
+        `Driver ${driver.id} declares no replay protection, so it cannot settle without a ledger`,
         { driver: driver.id, tier: this.tier },
       );
     }
-    return driver.settle(p, r);
+
+    if (opts) {
+      const prior = await opts.ledger.lookup(opts.idempotencyKey);
+      if (prior) {
+        // I8: a repeat is a success that settles nothing, never a failure.
+        return {
+          success: true,
+          network: r.network,
+          ...(prior.transaction === undefined ? {} : { transaction: prior.transaction }),
+          errorReason: "AUTH_ALREADY_USED",
+        };
+      }
+    }
+
+    const response = await driver.settle(p, r);
+
+    if (opts && response.success) {
+      await opts.ledger.record(opts.idempotencyKey, {
+        transaction: response.transaction,
+        settledAt: new Date().toISOString(),
+      });
+    }
+
+    return response;
   }
 }

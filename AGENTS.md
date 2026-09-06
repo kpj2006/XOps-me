@@ -100,7 +100,7 @@ Only the driver owning that scheme may.
 | I6 | `verify()` is offline — zero network calls in `exact/eip155` |
 | I7 | Idempotency key is deterministic, versioned, and **excludes `amount`** |
 | I8 | `AUTH_ALREADY_USED` is **SUCCESS**, never failure |
-| I9 | A driver must declare `nativeReplayProtection`; Tier 0 refuses to settle without it |
+| I9 | A driver must declare `nativeReplayProtection`; **every tier** refuses to settle without it, or without a `SettlementLedger` standing in for it |
 | I10 | No amount above `policy.max_per_payout` reaches a driver |
 
 **Supply chain**
