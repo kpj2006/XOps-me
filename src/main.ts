@@ -1,3 +1,4 @@
+import { readInput as input } from "./adapters/github/inputs.js";
 import { writeOutputs } from "./adapters/github/outputs.js";
 import { assertMaintainer, parseSendCommand } from "./adapters/github/trigger.js";
 import { toAtomic } from "./core/amount.js";
@@ -7,10 +8,6 @@ import { canonical, keyFor } from "./core/idempotency.js";
 import { parseIntent } from "./core/intent.js";
 import { DriverRegistry } from "./drivers/registry.js";
 import { InlineAddressResolver, ResolverChain } from "./resolvers/index.js";
-
-function input(name: string): string | undefined {
-  return process.env[`INPUT_${name.toUpperCase().replace(/ /g, "_")}`];
-}
 
 async function run(): Promise<number> {
   // L0 TRIGGER. A comment body, when given, is the source of truth for who gets

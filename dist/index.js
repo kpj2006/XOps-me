@@ -6,6 +6,26 @@ import { createRequire as __WEBPACK_EXTERNAL_createRequire } from "module";
 /************************************************************************/
 var __webpack_exports__ = {};
 
+;// CONCATENATED MODULE: ./src/adapters/github/inputs.ts
+/**
+ * Reads a GitHub Actions input.
+ *
+ * The empty-string handling is the whole point. A *declared* input that a
+ * workflow does not pass arrives as `INPUT_NAME=""`, not as absent. So
+ * `input("repo") ?? process.env.GITHUB_REPOSITORY` silently yields `""` —
+ * `??` only falls through on null and undefined — and every downstream
+ * fallback and default is defeated by a value that looks present.
+ *
+ * Treating blank as absent is what callers actually mean, and it makes
+ * declaring an input a safe, behaviour-preserving change.
+ */
+function readInput(name) {
+    const value = process.env[`INPUT_${name.toUpperCase().replace(/ /g, "_")}`];
+    if (value === undefined)
+        return undefined;
+    return value.trim() === "" ? undefined : value;
+}
+
 ;// CONCATENATED MODULE: external "node:fs"
 const external_node_fs_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs");
 ;// CONCATENATED MODULE: external "node:crypto"
@@ -467,14 +487,12 @@ class ResolverChain {
 
 
 
-function input(name) {
-    return process.env[`INPUT_${name.toUpperCase().replace(/ /g, "_")}`];
-}
+
 async function run() {
     // L0 TRIGGER. A comment body, when given, is the source of truth for who gets
     // paid and how much — it beats the workflow's static inputs, because a person
     // typed it deliberately.
-    const body = input("comment");
+    const body = readInput("comment");
     const command = body === undefined ? undefined : parseSendCommand(body);
     if (body !== undefined && command === undefined) {
         console.log("no /send command in this comment — nothing to do.");
@@ -483,23 +501,23 @@ async function run() {
     }
     if (command) {
         // L1 POLICY, offline, before anything else happens.
-        assertMaintainer(input("actor_association"));
-        const decimals = Number(input("decimals") ?? "6");
+        assertMaintainer(readInput("actor_association"));
+        const decimals = Number(readInput("decimals") ?? "6");
         console.log(`/send parsed: recipient=${command.recipient} amount=${command.amount}` +
             `${command.asset ? ` asset=${command.asset}` : ""} (decimals=${decimals})`);
     }
-    const decimals = Number(input("decimals") ?? "6");
+    const decimals = Number(readInput("decimals") ?? "6");
     const intent = parseIntent({
         platform: "github",
-        repo: input("repo") ?? process.env["GITHUB_REPOSITORY"],
-        ref: input("ref") ?? process.env["GITHUB_REF"],
-        actor: input("actor") ?? process.env["GITHUB_ACTOR"],
-        recipient: command?.recipient ?? input("recipient"),
-        amount: command ? toAtomic(command.amount, decimals) : input("amount"),
-        asset: command?.asset ?? input("asset"),
-        network: input("network"),
-        scheme: input("scheme"),
-        round: input("round"),
+        repo: readInput("repo") ?? process.env["GITHUB_REPOSITORY"],
+        ref: readInput("ref") ?? process.env["GITHUB_REF"],
+        actor: readInput("actor") ?? process.env["GITHUB_ACTOR"],
+        recipient: command?.recipient ?? readInput("recipient"),
+        amount: command ? toAtomic(command.amount, decimals) : readInput("amount"),
+        asset: command?.asset ?? readInput("asset"),
+        network: readInput("network"),
+        scheme: readInput("scheme"),
+        round: readInput("round"),
     });
     const idempotencyKey = canonical(keyFor(intent));
     const resolvers = new ResolverChain([new InlineAddressResolver()]);
@@ -509,7 +527,7 @@ async function run() {
     console.log("payout target:");
     console.log(JSON.stringify(target, null, 2));
     console.log(`idempotency key: ${idempotencyKey}`);
-    const mode = input("mode") ?? DEFAULT_SETTLEMENT_MODE;
+    const mode = readInput("mode") ?? DEFAULT_SETTLEMENT_MODE;
     if (mode === "dry-run") {
         console.log("mode: dry-run — nothing was settled.");
         writeOutputs({ STATUS: "dry-run", IDEMPOTENCY_KEY: idempotencyKey, ERROR_CODE: "" });
