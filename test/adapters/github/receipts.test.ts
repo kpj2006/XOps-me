@@ -92,6 +92,41 @@ test("an unconfirmed record alone still reports broadcasting, and still blocks",
   assert.equal(found?.transaction, "0xabc", "the hash is what a human needs to check");
 });
 
+/**
+ * The split that matters: everything findReceipt needs lives in the marker, so
+ * the visible body can be redesigned without risking idempotency. Before this,
+ * the transaction was parsed out of the prose and a reformat would have broken
+ * double-payment protection silently.
+ */
+test("idempotency data survives a total rewrite of the visible body", () => {
+  const real = formatReceipt(
+    { key: KEY, status: "settled", transaction: "0xabc" },
+    { amount: "0.02", asset: "tUSDC", to: "0xdead", explorerUrl: "https://example.invalid" },
+  );
+  const marker = real.split("\n")[0] as string;
+
+  // Marker alone, with nothing a human would recognise as a receipt.
+  const stripped = `${marker}\n### something else entirely\n\nno prose, no table.`;
+  const found = findReceipt([{ body: stripped, ...BOT }], KEY);
+  assert.equal(found?.key, KEY);
+  assert.equal(found?.status, "settled");
+  assert.equal(found?.transaction, "0xabc", "the transaction comes from the marker, not the prose");
+});
+
+test("legacy receipts written before the marker carried a transaction still parse", () => {
+  const legacy =
+    `<!-- xops-receipt:v1 key=${KEY} -->\n` +
+    "**XOps — payout settled**\n\n- Transaction: `0xlegacy`\n";
+  const found = findReceipt([{ body: legacy, ...BOT }], KEY);
+  assert.equal(found?.status, "settled");
+  assert.equal(found?.transaction, "0xlegacy");
+});
+
+test("anything not explicitly settled is treated as in-flight", () => {
+  const odd = `<!-- xops-receipt:v1 key=${KEY} status=weird tx=0xabc -->\nunknown`;
+  assert.equal(findReceipt([{ body: odd, ...BOT }], KEY)?.status, "broadcasting");
+});
+
 test("an empty or bodyless comment is skipped rather than throwing", () => {
   assert.equal(findReceipt([{ body: null }, { body: undefined }, {}], KEY), undefined);
 });

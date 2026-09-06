@@ -31,6 +31,29 @@ export interface LedgerEntry {
   settledAt?: string | undefined;
 }
 
+/**
+ * Descriptive context for a receipt. Presentation only — nothing here is used
+ * to decide whether a payout already happened, so it can change freely without
+ * touching idempotency.
+ *
+ * The explorer base is passed in rather than derived from the network: core and
+ * adapters must not hold chain-specific constants (I1), so it is configuration.
+ */
+export interface PayoutContext {
+  /** As the maintainer typed it, e.g. "0.01". */
+  amount?: string | undefined;
+  asset?: string | undefined;
+  /** Recipient address. */
+  to?: string | undefined;
+  /** The account the funds left — the Safe, not the delegate. */
+  from?: string | undefined;
+  /** Who authorized it. */
+  actor?: string | undefined;
+  network?: string | undefined;
+  /** Block explorer base, supplied as configuration. Core holds no such value itself. */
+  explorerUrl?: string | undefined;
+}
+
 export interface SettlementLedger {
   readonly id: string;
   /** A prior attempt for this key, or undefined if there is none. */

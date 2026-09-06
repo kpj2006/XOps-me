@@ -96,6 +96,17 @@ async function run(): Promise<number> {
       intent.source.platform === "github" ? intent.source.repo : intent.source.project,
     number: Number(required("pr")),
     token: required("github_token"),
+    // Presentation for the receipt. The explorer base is configuration rather
+    // than a derived constant, so no chain knowledge lands in an adapter (I1).
+    context: {
+      amount: command?.amount ?? intent.amount,
+      asset: intent.asset,
+      to: target.address,
+      from: input("safe"),
+      actor: intent.source.actor,
+      network: intent.network,
+      explorerUrl: input("explorer_url"),
+    },
   });
 
   const requirements = registry.buildRequirements({ intent, target, idempotencyKey });

@@ -89,6 +89,9 @@ inputs:
       change the recipient of an existing one — but it CAN send the allowance
       anywhere, so size the period cap to what you can afford to lose.
     required: false
+  explorer_url:
+    description: "Block explorer base, e.g. https://sepolia.etherscan.io. Used to link the receipt."
+    required: false
   pr:
     description: "Pull request number whose comments hold the payout receipts."
     required: false

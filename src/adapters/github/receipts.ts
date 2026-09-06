@@ -1,4 +1,4 @@
-import type { LedgerEntry, SettlementLedger } from "../../core/ledger.js";
+import type { LedgerEntry, PayoutContext, SettlementLedger } from "../../core/ledger.js";
 
 /**
  * The PR conversation is the ledger.
@@ -13,46 +13,99 @@ import type { LedgerEntry, SettlementLedger } from "../../core/ledger.js";
  */
 
 const MARKER = "xops-receipt";
-const MARKER_PATTERN = new RegExp(`<!--\\s*${MARKER}:v1\\s+key=(\\S+)\\s*-->`);
+const MARKER_PATTERN = new RegExp(`<!--\\s*${MARKER}:v1\\s+([^>]*?)\\s*-->`);
 
 export interface Receipt extends LedgerEntry {
   key: string;
 }
 
-export function formatReceipt(receipt: Receipt): string {
+/** Shortens an address for display without losing either end. */
+function shorten(value: string): string {
+  return value.length > 14 ? `${value.slice(0, 6)}…${value.slice(-4)}` : value;
+}
+
+function link(base: string | undefined, kind: "tx" | "address", value: string): string {
+  const label = `\`${shorten(value)}\``;
+  if (!base) return label;
+  return `[${label}](${base.replace(/\/+$/, "")}/${kind}/${value})`;
+}
+
+const SHARE = "https://github.com/kpj2006/XOps";
+const FOOTER =
+  `<sub>Paid automatically by [XOps](${SHARE}) — open source, runs in your own CI, ` +
+  `never custodies your funds. ` +
+  `[Share on X](https://x.com/intent/post?text=${encodeURIComponent(
+    "Paying open-source contributors straight from a merged PR with XOps",
+  )}&url=${SHARE}) · ` +
+  `[Mastodon](https://mastodon.social/share?text=${encodeURIComponent(`XOps — ${SHARE}`)}) · ` +
+  `[Reddit](https://reddit.com/submit?url=${SHARE}) · ` +
+  `[LinkedIn](https://www.linkedin.com/sharing/share-offsite/?url=${SHARE})</sub>`;
+
+/**
+ * The visible body is presentation and may be rewritten freely. Everything
+ * `findReceipt` relies on lives in the HTML marker, so a reformat can never
+ * break idempotency — which is why the transaction is no longer parsed out of
+ * the prose.
+ */
+export function formatReceipt(receipt: Receipt, context: PayoutContext = {}): string {
   const broadcasting = receipt.status === "broadcasting";
+  const explorer = context.explorerUrl;
+
+  const marker = [
+    `<!-- ${MARKER}:v1`,
+    `key=${receipt.key}`,
+    `status=${receipt.status}`,
+    ...(receipt.transaction ? [`tx=${receipt.transaction}`] : []),
+    "-->",
+  ].join(" ");
+
+  const headline =
+    context.amount && context.asset && context.to
+      ? `**${context.amount} ${context.asset}** → ${link(explorer, "address", context.to)}`
+      : undefined;
+
+  const rows: [string, string][] = [];
+  if (context.from) rows.push(["From", `Safe ${link(explorer, "address", context.from)}`]);
+  if (context.actor) rows.push(["Authorized by", `@${context.actor}`]);
+  if (context.network) rows.push(["Network", `\`${context.network}\``]);
+  if (receipt.transaction) {
+    rows.push(["Transaction", link(explorer, "tx", receipt.transaction)]);
+  }
+  if (receipt.settledAt) rows.push(["Settled", receipt.settledAt.replace("T", " ").slice(0, 19) + " UTC"]);
 
   const lines = [
-    `<!-- ${MARKER}:v1 key=${receipt.key} -->`,
-    broadcasting ? "**XOps — payout broadcasting**" : "**XOps — payout settled**",
+    marker,
+    `### XOps — payout ${broadcasting ? "broadcasting" : "settled"}`,
     "",
+    ...(headline ? [headline, ""] : []),
+    ...(rows.length ? ["| | |", "|---|---|", ...rows.map(([k, v]) => `| ${k} | ${v} |`), ""] : []),
+    broadcasting
+      ? "Written **before** broadcasting, so this transaction may not have landed yet. " +
+        "If it never does, re-run with `round` bumped to pay again deliberately — XOps " +
+        "will not decide that for you, because paying twice cannot be undone."
+      : "Re-running this payout settles nothing — this receipt is its idempotency record.",
+    "",
+    FOOTER,
   ];
-
-  if (receipt.transaction) lines.push(`- Transaction: \`${receipt.transaction}\``);
-  if (receipt.settledAt) lines.push(`- Settled: ${receipt.settledAt}`);
-
-  lines.push(
-    "",
-    "This receipt is the idempotency record. While it is present, a re-run of",
-    "this payout settles nothing and reports it as already paid.",
-  );
-
-  if (broadcasting) {
-    lines.push(
-      "",
-      "It was written **before** broadcasting, so the transaction above may or may",
-      "not have landed. Check it on a block explorer. If it never landed, re-run",
-      "with `round` bumped to deliberately pay again — XOps will not decide that",
-      "for you, because paying twice cannot be undone.",
-    );
-  }
 
   return lines.join("\n");
 }
 
+/** Fields from the receipt marker. Empty when the body is not a receipt. */
+function parseMarker(body: string): Record<string, string> {
+  const inner = MARKER_PATTERN.exec(body)?.[1];
+  if (!inner) return {};
+  const fields: Record<string, string> = {};
+  for (const pair of inner.trim().split(/\s+/)) {
+    const eq = pair.indexOf("=");
+    if (eq > 0) fields[pair.slice(0, eq)] = pair.slice(eq + 1);
+  }
+  return fields;
+}
+
 /** The key a receipt comment carries, or undefined if the body is not a receipt. */
 export function parseReceiptKey(body: string): string | undefined {
-  return MARKER_PATTERN.exec(body)?.[1];
+  return parseMarker(body)["key"];
 }
 
 export interface CommentLike {
@@ -77,7 +130,8 @@ export function isTrustedReceiptAuthor(comment: CommentLike): boolean {
 }
 
 /** Finds a trusted receipt for `key` among comments. Pure, so it is testable. */
-const TRANSACTION_PATTERN = /^- Transaction: `([^`]+)`/m;
+/** Fallback for receipts written before the marker carried the transaction. */
+const LEGACY_TRANSACTION = /^- Transaction: `([^`]+)`/m;
 
 /**
  * A settled payout leaves two comments — the pre-broadcast record and the
@@ -91,15 +145,19 @@ export function findReceipt(comments: readonly CommentLike[], key: string): Rece
 
   for (const comment of comments) {
     const body = comment.body ?? "";
-    if (parseReceiptKey(body) !== key) continue;
+    const marker = parseMarker(body);
+    if (marker["key"] !== key) continue;
     if (!isTrustedReceiptAuthor(comment)) continue;
 
-    const transaction = TRANSACTION_PATTERN.exec(body)?.[1];
+    const transaction = marker["tx"] ?? LEGACY_TRANSACTION.exec(body)?.[1];
     const receipt: Receipt = {
       key,
       // An unconfirmed record still blocks a re-pay. Reading it as anything
       // weaker would reintroduce the double-payment window it exists to close.
-      status: body.includes("payout settled") ? "settled" : "broadcasting",
+      // Anything that is not explicitly settled is treated as in-flight.
+      status: marker["status"] === "settled" || body.includes("payout settled")
+        ? "settled"
+        : "broadcasting",
       ...(transaction === undefined ? {} : { transaction }),
     };
 
@@ -117,6 +175,8 @@ export interface PullRequestRef {
   number: number;
   token: string;
   apiBase?: string;
+  /** Presentation only — never consulted when deciding if a payout happened. */
+  context?: PayoutContext;
 }
 
 async function githubJson(url: string, token: string): Promise<CommentLike[]> {
@@ -176,7 +236,9 @@ export class PullRequestReceiptLedger implements SettlementLedger {
         "x-github-api-version": "2022-11-28",
         "user-agent": "xops",
       },
-      body: JSON.stringify({ body: formatReceipt({ key, ...entry }) }),
+      body: JSON.stringify({
+        body: formatReceipt({ key, ...entry }, this.ref.context ?? {}),
+      }),
     });
   }
 
