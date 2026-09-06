@@ -395,6 +395,58 @@ won't accept a single chain.
 
 ---
 
+## 6f. 🔴 VERIFIED — the allowance model LOSES idempotency. Unsolved.
+
+Read directly from `allowances/contracts/AllowanceModule.sol` (2026-09-06).
+
+**The empty-signature path — the one our bot uses — has NO replay protection.**
+When `msg.sender == delegate` and `signature` is `0x`, the module checks caller identity only.
+The `nonce` in the `Allowance` struct is consumed *as input to the signed hash* and is **never
+compared against a stored "already used" value**. So an identical second call **succeeds and
+pays again**, bounded only by `require(newSpent <= allowance.amount)` — i.e. protection is
+incidental (you run out of allowance) rather than real.
+
+**The signature path does have replay protection**, but not the kind we need. The nonce is baked
+into the signed hash and storage bumps it, so a *captured, replayed signature* reverts. But a
+re-running workflow doesn't replay a signature — it reads the fresh nonce and signs again, which
+succeeds. **The module cannot make a stateless re-run idempotent.**
+
+**Why this matters:** under EIP-3009 we got idempotency free — `AUTH_ALREADY_USED` mapped to
+success (I8), and a retry was a no-op. The allowance model **gives that up**, and `AGENTS.md` I8
+plus the whole `core/idempotency.ts` canonical-key design assume it. A re-run double-pays.
+
+**Consequences already visible:**
+- `nativeReplayProtection` is honestly **`false`** → I9 makes the tier-0 registry refuse to
+  settle. That invariant is doing its job; do not weaken it to get the driver registered.
+- `needsSecret` is **`true`** (CI holds the delegate key) → I3 blocks tier-0 registration.
+  Tier **1** ("adopter-operated process with its own credentials") is the honest home for this
+  driver — a CI runner holding the adopter's delegate key is exactly that. But note
+  `registry.ts:75` only enforces the replay check at tier 0, so moving to tier 1 **silently drops
+  it**. Fix the guard when making that move.
+
+**Proposed fix, not yet built: the receipt comment is the idempotency ledger.**
+Before settling, read the PR for an existing receipt carrying this payout's canonical
+idempotency key; if present, report already-paid and settle nothing. Keeps "XOps is an artifact,
+not a service" (no server — GitHub holds the state), needs `issues: write` permission, and the
+canonical key from `core/idempotency.ts` is already exactly the right token to match on.
+**Weakness: it is check-then-act, so two concurrent runs can both pass the check.** Concurrency
+control (a GitHub Actions `concurrency:` group keyed on the payout) is the mitigation. Decide
+before writing `settle()`.
+
+**Other verified facts:**
+- Exact signature: `executeAllowanceTransfer(ISafe safe, address token, address payable to,
+  uint96 amount, address paymentToken, uint96 payment, address delegate, bytes signature)`.
+  `amount`/`payment` are **uint96, not uint256** — assuming uint256 gives a wrong selector and a
+  revert with nothing readable.
+- Canonical selector `0x4515641a`, derived locally from keccak256, pinned in `abi.ts` and
+  re-derived in its test so it cannot drift.
+- uint96 max ≈ 7.9e19 USDC — not a practical ceiling.
+- Reset is computed **on read**, lazily, inside `getAllowance`, and written back only when a
+  mutating call follows. Public getter `getTokenAllowance(safe, delegate, token)` returns
+  `[amount, spent, resetTimeMin, lastResetMin, nonce]`.
+
+---
+
 ## 6b. RESEARCH PROMPTS — re-run these
 
 Three research threads were launched and were **killed by a session interrupt** before

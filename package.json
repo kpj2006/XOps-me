@@ -21,7 +21,10 @@
     "check:deps": "node scripts/check-deps.mjs",
     "check": "npm run lint && npm run check:boundary && npm run check:deps && npm run test"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@noble/curves": "1.9.2",
+    "@noble/hashes": "1.8.0"
+  },
   "devDependencies": {
     "@eslint/js": "9.39.0",
     "@types/node": "22.19.0",
