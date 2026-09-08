@@ -549,3 +549,44 @@ signing each payment do **not** — rewrite them once the architecture is settle
    much of `AGENTS.md` / `ROADMAP.md` / `REFERENCES.md` has to follow. Those encode a 6-week plan
    and a release gate built on EIP-3009 — changing them mid-SoC is worth doing deliberately, and
    probably worth Bruno's sign-off first.
+
+---
+
+## 11. ✅ RESOLVED (2026-09-08) — the workflow states the network once, and derives the rest
+
+**Problem.** The demo workflow named the same chain twice, in two formats: `network:
+eip155:11155111` and `chain_id: "11155111"`, plus a hardcoded `allowance_module` and
+`explorer_url` that are equally functions of the network. Four values, one fact.
+
+That is not just verbose. Nothing downstream compares `chain_id` against `network` —
+`SafeAllowanceDriver.supports()` and `.verify()` both match on the CAIP-2 network alone — so a
+mismatched chain id is signed without complaint and rejected only at **broadcast**, which is
+after `registry.settle()` has written the `broadcasting` ledger entry. The payout is then stuck
+behind `already-paid` until someone bumps `round`. A copy-paste setup error lands in the one
+window where failure is expensive.
+
+**Decision.** A chain registry at `src/drivers/chains.ts`, keyed by CAIP-2, supplying `chainId`,
+`allowanceModule` and `explorer`. `main.ts` looks the record up and an explicit input still wins.
+Only adopter-specific values stay in the workflow: `rpc_url`, `safe`, `token`, `delegate_key`.
+
+**Friendly network names: accepted as sugar, rejected as a substitute.** `network: sepolia` now
+works, but `canonicalNetwork()` resolves it *before* `parseIntent`, so `eip155:11155111` is what
+reaches the intent, the key, driver resolution and the receipt. The AGENTS.md rule "CAIP-2, never
+friendly strings" has a mechanism behind it: `network` is in the idempotency key verbatim, so two
+spellings of one chain are two keys, and the receipt written under one would not stop a second
+payout under the other.
+
+**An unlisted network stays usable.** `lookupChain()` does not throw; a miss just means nothing to
+default from, and the error names the input to pass. Gating on registry membership would have
+removed a working path in the name of making setup easier.
+
+**Not derived: `token` and `decimals`.** REFERENCES.md §2.1 leaves the Ethereum Sepolia USDC
+address unverified, and a guessed token address is worse than an absent one. They stay inputs
+until someone confirms the address and `decimals()` on-chain — at which point they belong in the
+registry's `assets` map for the same reason as the rest.
+
+**Guards added.** `test/drivers/chains.test.ts` (alias resolution is idempotent and collapses onto
+a known key; a record agrees with the key it is stored under). `test/manifest.test.ts`: the
+default network must be in the registry, and `chain_id` / `allowance_module` / `explorer_url` must
+carry **no** manifest default — a declared default arrives as the input's value and would silently
+win over the registry.

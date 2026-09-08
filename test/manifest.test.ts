@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 
+import { canonicalNetwork, lookupChain } from "../src/drivers/chains.js";
 import { SAFE_ALLOWANCE_SCHEME } from "../src/drivers/safe-allowance/driver.js";
 
 /**
@@ -54,10 +55,42 @@ test("the default network is the one AGENTS.md mandates", () => {
   assert.equal(inputs().get("network")?.default, "eip155:11155111");
 });
 
+test("the default network is in the chain registry", () => {
+  // Otherwise the out-of-the-box configuration derives nothing, and a workflow
+  // that omits chain_id and allowance_module — as the documented setup now
+  // does — fails at the first real settlement rather than at parse time.
+  const network = inputs().get("network")?.default;
+  assert.ok(network, "network must have a default");
+  assert.ok(
+    lookupChain(canonicalNetwork(network)),
+    `action.yml defaults network to "${network}", which the chain registry does not know`,
+  );
+});
+
+test("inputs derived from the network carry no manifest default", () => {
+  // A declared default arrives as the input's value, so it would win over the
+  // registry in `input(name) ?? chain?.…` and quietly disable derivation. These
+  // three must stay absent-unless-set.
+  const declared = inputs();
+  for (const name of ["chain_id", "allowance_module", "explorer_url"]) {
+    assert.ok(declared.has(name), `${name} should be declared`);
+    assert.equal(
+      declared.get(name)?.default,
+      undefined,
+      `${name} is derived from network; a default here would override the chain registry`,
+    );
+  }
+});
+
 test("every input main.ts reads is declared in action.yml", () => {
   const main = readFileSync(join(process.cwd(), "src/main.ts"), "utf8");
   const read = new Set(
-    [...main.matchAll(/\binput\("([a-z_]+)"\)/g)].map((m) => m[1] as string),
+    // Also the helpers that read an input by name. Matching `input("x")` alone
+    // missed every input reached through `required()` — which is most of the
+    // settlement configuration — so the check silently covered a shrinking set.
+    [...main.matchAll(/\b(?:input|required|derived)\(\s*"([a-z_]+)"/g)].map(
+      (m) => m[1] as string,
+    ),
   );
   const declared = inputs();
 

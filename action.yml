@@ -46,7 +46,13 @@ inputs:
     required: false
     default: "USDC"
   network:
-    description: "CAIP-2 network identifier."
+    description: >
+      CAIP-2 network identifier, or a friendly alias for one (`sepolia`). An alias
+      is resolved to its CAIP-2 form before anything else runs, so the canonical
+      spelling is what reaches the intent, the idempotency key and the receipt —
+      two spellings of one chain would be two keys, and the same payout could
+      settle twice. A network in the chain registry also supplies `chain_id`,
+      `allowance_module` and `explorer_url`, so a workflow need not repeat them.
     required: false
     default: "eip155:11155111"
   scheme:
@@ -71,7 +77,12 @@ inputs:
     description: "JSON-RPC endpoint for the network."
     required: false
   chain_id:
-    description: "Numeric chain id, e.g. 11155111 for Ethereum Sepolia."
+    description: >
+      Numeric chain id, e.g. 11155111 for Ethereum Sepolia. Derived from `network`
+      when that network is in the chain registry; pass it only for a network that
+      is not. Do not set it redundantly — nothing downstream compares it against
+      `network`, so a mismatch is signed and then rejected at broadcast, after the
+      attempt is already recorded.
     required: false
   safe:
     description: "Address of the Safe holding the funds."
@@ -80,7 +91,9 @@ inputs:
     description: "ERC-20 being paid out."
     required: false
   allowance_module:
-    description: "Safe AllowanceModule deployment address for this chain."
+    description: >
+      Safe AllowanceModule deployment address for this chain. Derived from
+      `network`; set it only to point at a different deployment.
     required: false
   delegate_key:
     description: >
@@ -90,7 +103,9 @@ inputs:
       anywhere, so size the period cap to what you can afford to lose.
     required: false
   explorer_url:
-    description: "Block explorer base, e.g. https://sepolia.etherscan.io. Used to link the receipt."
+    description: >
+      Block explorer base, e.g. https://sepolia.etherscan.io. Used to link the
+      receipt. Derived from `network`; set it to use a different explorer.
     required: false
   pr:
     description: "Pull request number whose comments hold the payout receipts."

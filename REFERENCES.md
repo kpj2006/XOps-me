@@ -28,7 +28,12 @@ Node ≥ 20 (native `fetch`, `using: node20` in `action.yml`).
 
 ---
 
-## 2. Chain registry — `assets/chains.json`
+## 2. Chain registry — `src/drivers/chains.ts`
+
+> Implemented as a TypeScript module, not `assets/chains.json`: it is one entry, and a JSON
+> import would need a bundler assertion for nothing. It lives under `src/drivers/` because
+> that is the only place I1 permits a chain id or a hex address to be written down. `main.ts`
+> does the lookup and hands plain strings down, so core and the adapters still learn nothing.
 
 **Ethereum Sepolia is the only network implemented until v1.0.0.** Everything in §2.3 is
 reference material for later phases — do not add those entries to `chains.json` yet.

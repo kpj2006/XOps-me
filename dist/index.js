@@ -5122,6 +5122,71 @@ function parseIntent(raw) {
     return { source, recipient, amount, asset, network, scheme, round };
 }
 
+;// CONCATENATED MODULE: ./src/drivers/chains.ts
+/**
+ * Keyed by CAIP-2, because that is what the intent, the idempotency key and
+ * driver resolution all use.
+ *
+ * No `assets` entry yet, deliberately. REFERENCES.md §2.1 leaves the Ethereum
+ * Sepolia USDC address unverified, and a guessed token address is worse than an
+ * absent one — so `token` and `decimals` stay maintainer inputs until someone
+ * confirms the address and `decimals()` on-chain. That is the one remaining
+ * value in the demo workflow that is a function of the network and still has to
+ * be typed.
+ */
+const CHAINS = {
+    "eip155:11155111": {
+        name: "Ethereum Sepolia",
+        network: "eip155:11155111",
+        chainId: 11155111n,
+        explorer: "https://sepolia.etherscan.io",
+        // v0.1.0, verified. Absent from Base Sepolia entirely, which is why this is
+        // the only supported network until v1.0.0 — see DECISION-LOG.md §4 and §6c.
+        allowanceModule: "0xCFbFaC74C26F8647cBDb8c5caf80BB5b32E43134",
+    },
+};
+/**
+ * Friendly names are *sugar for* the CAIP-2 identifier, never a replacement.
+ *
+ * AGENTS.md's "CAIP-2, never friendly strings" rule has a mechanism behind it:
+ * `network` goes into the idempotency key verbatim, so two spellings of one
+ * chain are two keys, and the same payout could settle twice. Resolving the
+ * alias before the intent is built keeps a single canonical spelling in the
+ * key, the receipt and driver resolution, while letting a workflow say
+ * `network: sepolia`.
+ */
+const ALIASES = {
+    sepolia: "eip155:11155111",
+    "ethereum-sepolia": "eip155:11155111",
+};
+function supportedNetworks() {
+    return [...Object.keys(CHAINS), ...Object.keys(ALIASES)].sort();
+}
+/**
+ * Maps a friendly alias onto its CAIP-2 identifier, and passes anything else
+ * through untouched.
+ *
+ * Untouched matters: an unlisted network is still a usable one, as long as the
+ * workflow supplies the values this registry would have derived. Gating on
+ * registry membership would take a working path away in the name of making
+ * setup easier. An input that is neither an alias nor valid CAIP-2 fails in
+ * `parseIntent`, where that check already lives.
+ */
+function canonicalNetwork(network) {
+    const key = network.trim();
+    return ALIASES[key.toLowerCase()] ?? key;
+}
+/**
+ * Does not throw. A miss means "nothing to default from", and the caller
+ * reports which input the workflow therefore has to pass — which is a better
+ * error than "unknown network", because it names the fix.
+ *
+ * Pass the CAIP-2 spelling from `canonicalNetwork`, not raw user input.
+ */
+function lookupChain(network) {
+    return CHAINS[network];
+}
+
 ;// CONCATENATED MODULE: ./src/drivers/registry.ts
 
 function tierViolationMessage(id) {
@@ -5300,6 +5365,7 @@ class ResolverChain {
 
 
 
+
 async function run() {
     // L0 TRIGGER. A comment body, when given, is the source of truth for who gets
     // paid and how much — it beats the workflow's static inputs, because a person
@@ -5319,6 +5385,15 @@ async function run() {
             `${command.asset ? ` asset=${command.asset}` : ""} (decimals=${decimals})`);
     }
     const decimals = Number(readInput("decimals") ?? "6");
+    /**
+     * Resolve the network spelling BEFORE the intent is built. A friendly alias is
+     * sugar for a CAIP-2 identifier, never a substitute: `network` goes into the
+     * idempotency key verbatim, so two spellings of one chain would be two keys —
+     * and the same payout could then settle twice. One canonical spelling reaches
+     * the key, the receipt and driver resolution.
+     */
+    const requestedNetwork = readInput("network");
+    const network = requestedNetwork === undefined ? undefined : canonicalNetwork(requestedNetwork);
     const intent = parseIntent({
         platform: "github",
         repo: readInput("repo") ?? process.env["GITHUB_REPOSITORY"],
@@ -5327,7 +5402,7 @@ async function run() {
         recipient: command?.recipient ?? readInput("recipient"),
         amount: command ? toAtomic(command.amount, decimals) : readInput("amount"),
         asset: command?.asset ?? readInput("asset"),
-        network: readInput("network"),
+        network,
         scheme: readInput("scheme"),
         round: readInput("round"),
     });
@@ -5351,11 +5426,33 @@ async function run() {
             throw new Error(`Real settlement needs the "${name}" input`);
         return value;
     };
+    /**
+     * Anything that is a function of the network comes from the chain registry,
+     * and an explicit input still wins — a custom module deployment or a private
+     * explorer stays configurable, and an unlisted network stays usable by
+     * passing all three.
+     *
+     * The point is not saved typing. `chain_id` written next to `network` is one
+     * fact in two formats with nothing comparing them: `supports()` and
+     * `verify()` both match on the CAIP-2 network alone, so a mismatched chain id
+     * is signed without complaint and rejected only at broadcast — by which time
+     * the ledger has recorded the attempt, and the payout is stuck behind
+     * `already-paid` until someone bumps `round`.
+     */
+    const chain = lookupChain(intent.network);
+    const derived = (name, fallback) => {
+        const value = readInput(name) ?? fallback;
+        if (!value) {
+            throw new Error(`Real settlement needs the "${name}" input: network ${intent.network} is not in ` +
+                "the chain registry, so there is nothing to derive it from.");
+        }
+        return value;
+    };
     const driver = new SafeAllowanceDriver({
         network: intent.network,
-        chainId: BigInt(required("chain_id")),
+        chainId: BigInt(derived("chain_id", chain?.chainId.toString())),
         rpcUrl: required("rpc_url"),
-        moduleAddress: required("allowance_module"),
+        moduleAddress: derived("allowance_module", chain?.allowanceModule),
         safeAddress: required("safe"),
         tokenAddress: required("token"),
         delegatePrivateKey: required("delegate_key"),
@@ -5371,8 +5468,9 @@ async function run() {
         repo: intent.source.platform === "github" ? intent.source.repo : intent.source.project,
         number: Number(required("pr")),
         token: required("github_token"),
-        // Presentation for the receipt. The explorer base is configuration rather
-        // than a derived constant, so no chain knowledge lands in an adapter (I1).
+        // Presentation for the receipt. The explorer base is resolved here and
+        // handed over as a plain string, so the adapter still imports no chain
+        // knowledge and holds no constant of its own (I1).
         context: {
             amount: command?.amount ?? intent.amount,
             asset: intent.asset,
@@ -5380,7 +5478,7 @@ async function run() {
             from: readInput("safe"),
             actor: intent.source.actor,
             network: intent.network,
-            explorerUrl: readInput("explorer_url"),
+            explorerUrl: readInput("explorer_url") ?? chain?.explorer,
         },
     });
     const requirements = registry.buildRequirements({ intent, target, idempotencyKey });

@@ -8,6 +8,7 @@ import { DEFAULT_SETTLEMENT_MODE } from "./core/defaults.js";
 import { XOpsError } from "./core/errors.js";
 import { canonical, keyFor } from "./core/idempotency.js";
 import { parseIntent } from "./core/intent.js";
+import { canonicalNetwork, lookupChain } from "./drivers/chains.js";
 import { DriverRegistry } from "./drivers/registry.js";
 import { InlineAddressResolver, ResolverChain } from "./resolvers/index.js";
 
@@ -37,6 +38,17 @@ async function run(): Promise<number> {
 
   const decimals = Number(input("decimals") ?? "6");
 
+  /**
+   * Resolve the network spelling BEFORE the intent is built. A friendly alias is
+   * sugar for a CAIP-2 identifier, never a substitute: `network` goes into the
+   * idempotency key verbatim, so two spellings of one chain would be two keys —
+   * and the same payout could then settle twice. One canonical spelling reaches
+   * the key, the receipt and driver resolution.
+   */
+  const requestedNetwork = input("network");
+  const network =
+    requestedNetwork === undefined ? undefined : canonicalNetwork(requestedNetwork);
+
   const intent = parseIntent({
     platform: "github",
     repo: input("repo") ?? process.env["GITHUB_REPOSITORY"],
@@ -45,7 +57,7 @@ async function run(): Promise<number> {
     recipient: command?.recipient ?? input("recipient"),
     amount: command ? toAtomic(command.amount, decimals) : input("amount"),
     asset: command?.asset ?? input("asset"),
-    network: input("network"),
+    network,
     scheme: input("scheme"),
     round: input("round"),
   });
@@ -73,11 +85,37 @@ async function run(): Promise<number> {
     return value;
   };
 
+  /**
+   * Anything that is a function of the network comes from the chain registry,
+   * and an explicit input still wins — a custom module deployment or a private
+   * explorer stays configurable, and an unlisted network stays usable by
+   * passing all three.
+   *
+   * The point is not saved typing. `chain_id` written next to `network` is one
+   * fact in two formats with nothing comparing them: `supports()` and
+   * `verify()` both match on the CAIP-2 network alone, so a mismatched chain id
+   * is signed without complaint and rejected only at broadcast — by which time
+   * the ledger has recorded the attempt, and the payout is stuck behind
+   * `already-paid` until someone bumps `round`.
+   */
+  const chain = lookupChain(intent.network);
+
+  const derived = (name: string, fallback: string | undefined): string => {
+    const value = input(name) ?? fallback;
+    if (!value) {
+      throw new Error(
+        `Real settlement needs the "${name}" input: network ${intent.network} is not in ` +
+          "the chain registry, so there is nothing to derive it from.",
+      );
+    }
+    return value;
+  };
+
   const driver = new SafeAllowanceDriver({
     network: intent.network,
-    chainId: BigInt(required("chain_id")),
+    chainId: BigInt(derived("chain_id", chain?.chainId.toString())),
     rpcUrl: required("rpc_url"),
-    moduleAddress: required("allowance_module"),
+    moduleAddress: derived("allowance_module", chain?.allowanceModule),
     safeAddress: required("safe"),
     tokenAddress: required("token"),
     delegatePrivateKey: required("delegate_key"),
@@ -96,8 +134,9 @@ async function run(): Promise<number> {
       intent.source.platform === "github" ? intent.source.repo : intent.source.project,
     number: Number(required("pr")),
     token: required("github_token"),
-    // Presentation for the receipt. The explorer base is configuration rather
-    // than a derived constant, so no chain knowledge lands in an adapter (I1).
+    // Presentation for the receipt. The explorer base is resolved here and
+    // handed over as a plain string, so the adapter still imports no chain
+    // knowledge and holds no constant of its own (I1).
     context: {
       amount: command?.amount ?? intent.amount,
       asset: intent.asset,
@@ -105,7 +144,7 @@ async function run(): Promise<number> {
       from: input("safe"),
       actor: intent.source.actor,
       network: intent.network,
-      explorerUrl: input("explorer_url"),
+      explorerUrl: input("explorer_url") ?? chain?.explorer,
     },
   });
 

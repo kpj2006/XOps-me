@@ -236,7 +236,13 @@ contract rejects it as used. That rejection is **success** (I8).
 - Amounts are **strings in atomic units**. Never `number`, never floats. USDC has 6 decimals.
 - `asset` is an **opaque identifier**, not an address — Solana mints and Stellar asset IDs
   are not `0x`. Resolve `decimals` from the registry, never infer.
-- Networks are **CAIP-2** (`eip155:143`), never friendly strings.
+- Networks are **CAIP-2** (`eip155:143`), never friendly strings. A workflow may *type* an
+  alias (`sepolia`); `canonicalNetwork()` resolves it before `parseIntent`, so the CAIP-2
+  spelling is the only one that reaches the intent, the idempotency key and the receipt.
+  Two spellings surviving into the key would let one payout settle twice.
+- Anything that is a **function of the network** — `chainId`, the AllowanceModule address,
+  the explorer base — comes from the chain registry in `src/drivers/chains.ts`, never from a
+  workflow input restating what `network` already says. An explicit input still overrides.
 - Errors are codes from `src/core/errors.ts`. Never surface a stack trace in a PR comment.
 - Every settlement path writes `TX_HASH` and `EXPLORER_URL` to `GITHUB_OUTPUT`, including on
   failure paths.
