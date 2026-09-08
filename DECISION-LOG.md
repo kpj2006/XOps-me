@@ -590,3 +590,71 @@ a known key; a record agrees with the key it is stored under). `test/manifest.te
 default network must be in the registry, and `chain_id` / `allowance_module` / `explorer_url` must
 carry **no** manifest default — a declared default arrives as the input's value and would silently
 win over the registry.
+
+---
+
+## 12. ✅ RESOLVED (2026-09-08) — policy is declared as inputs, not scripted in workflow YAML
+
+**Problem.** The only policy XOps enforced was a hardcoded maintainer gate, and the only place a
+cap or a kill switch existed was in the documentation. I10 ("no amount above
+`policy.max_per_payout` reaches a driver") had **no implementation**, `AMOUNT_CAP_EXCEEDED` was an
+unused error code, and `DEFAULT_SETTLEMENT_ENABLED` sat in `core/defaults.ts` wired to nothing.
+
+Meanwhile the demo repo asserted the gate's behaviour in twenty lines of hand-written shell. That
+is the wrong place for it twice over: an adopter should not have to write assertions to find out
+what the action refuses, and shell in a workflow cannot be unit-tested.
+
+**Decision.** `src/core/policy.ts`, three named conditions, evaluated offline before anything is
+resolved, signed or recorded:
+
+- `SETTLEMENT_ENABLED` — the kill switch, evaluated first
+- `MAINTAINER_APPROVED` — the gate, with the allowlist now the adopter's to set
+- `AMOUNT_WITHIN_CAP` — I10, finally enforced
+
+A maintainer configures all three with inputs (`enabled`, `allowed_associations`,
+`max_per_payout`) and writes no logic. Every run prints the per-condition table with evidence, so
+a refusal says which rule refused and why.
+
+**Named constants, not an expression language.** Whoever can edit an expression can rewrite the
+rule that is supposed to constrain them, and every future evaluator bug is a money bug. Adding a
+condition is deliberately more work than writing a one-liner.
+
+**Where the maintainer gate moved, and why it moved twice.** It used to run inside the
+`if (command)` branch, before the intent existed — so it structurally could not check an amount.
+Policy now runs after `parseIntent` and before the `dry-run` branch. Two consequences worth
+stating: I10 is enforceable at all, and a dry run is an honest preview, because it reports the
+same refusal a real run would rather than claiming success on a blocked payout.
+
+**`author_association` semantics stayed in the adapter.** Core policy is told only whether the
+actor may spend. `undefined` there means "not comment-triggered" and **skips** the condition —
+treating a missing comment author as "not a maintainer" would deny every workflow-configured or
+merge-triggered payout. A skip is recorded as a skip, never as a pass.
+
+**The cap is a human decimal, in the same units `/send` is typed in.** `max_per_payout: "5"` is
+5 USDC. Atomic units would have been the safer misread — a maintainer who typed "50" meaning
+50 USDC would get a 0.00005 cap and a loud, harmless refusal, where the decimal reading of an
+atomic intent is over-permissive. Consistency with the number the cap is *compared against* won
+anyway: the maintainer's whole mental model comes from `/send 2.50`, and the resolved cap is
+logged in both forms on every run.
+
+**A blank `allowed_associations` falls back to the default rather than allowing nobody.** A blank
+input is far more likely to be an unset repository variable than a deliberate lockout, and
+silently disabling `/send` is a bad way to discover that. The kill switch is how you say it on
+purpose. An unrecognized entry warns and is kept, following the `.xops.yml` convention: a typo
+can only ever narrow an allowlist, so the consequence is a refused payout, never an unintended
+one — and failing outright would break every run the day GitHub adds an association value.
+
+**Deviation from ROADMAP week 4.** The kill switch is the *first condition*, not a check ahead of
+policy evaluation. Conditions are pure and offline, so there is no work to skip, and evaluating
+all of them is what lets one run report every problem at once. A disabled kill switch still
+refuses regardless of the rest of the configuration.
+
+**The demo workflow's twenty lines of assertions became six.** The decision table is unit-tested
+offline in `test/core/policy.test.ts`; the workflow now asserts only what a unit test cannot —
+that the gate fires inside a real Action run, in a real settlement configuration, with nothing
+signed on the way to refusing. Its outputs also arrive as env vars rather than `${{ }}`
+interpolated into the script.
+
+**Still open.** The policy result table is printed to the log but not yet rendered into the PR
+comment (ROADMAP week 4). `.xops.yml` remains the planned home for this configuration; `Policy`
+is a plain record so a loader can produce it without touching the evaluator.

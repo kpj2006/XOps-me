@@ -1,5 +1,3 @@
-import { XOpsError } from "../../core/errors.js";
-
 /**
  * L0 TRIGGER. Turns a PR comment into the makings of an Intent.
  *
@@ -74,19 +72,71 @@ export function parseSendCommand(body: string): SendCommand | undefined {
 /**
  * Author associations GitHub reports for people who can be trusted to spend the
  * project's money. Everything else — CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR, NONE —
- * is denied, so a drive-by commenter cannot trigger a payout to themselves.
+ * is denied by default, so a drive-by commenter cannot trigger a payout to
+ * themselves.
  *
- * This is L1 POLICY and it is evaluated offline, before anything reaches a driver.
+ * Which associations qualify is the adopter's call, so it is configurable. What
+ * an association *means* stays here rather than in core policy: `author_association`
+ * is a GitHub concept, and core is told only whether the actor may spend.
  */
-const MAINTAINER_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+export const DEFAULT_MAINTAINER_ASSOCIATIONS = ["OWNER", "MEMBER", "COLLABORATOR"] as const;
 
-export function assertMaintainer(association: string | undefined): void {
-  const value = (association ?? "").trim().toUpperCase();
-  if (!MAINTAINER_ASSOCIATIONS.has(value)) {
-    throw new XOpsError(
-      "POLICY_DENIED",
-      `\`/send\` is restricted to maintainers. Author association was "${association ?? "unknown"}".`,
-      { association: association ?? null },
-    );
+/** Every value GitHub documents for `author_association`. Used to catch typos. */
+const KNOWN_ASSOCIATIONS = new Set([
+  "OWNER",
+  "MEMBER",
+  "COLLABORATOR",
+  "CONTRIBUTOR",
+  "FIRST_TIME_CONTRIBUTOR",
+  "FIRST_TIMER",
+  "MANNEQUIN",
+  "NONE",
+]);
+
+/**
+ * Reads the configured allowlist, e.g. `OWNER,MEMBER`.
+ *
+ * An unrecognized entry **warns and is kept** rather than failing the run. A
+ * typo can only ever narrow an allowlist — `OWNERS` matches nobody — so the
+ * consequence is a denied payout, never an unintended one. Failing outright
+ * would instead break every run the day GitHub adds an association value. This
+ * follows the `.xops.yml` convention: unknown keys warn, never fail.
+ *
+ * An empty or blank list falls back to the default. Reading it as "allow
+ * nobody" would be defensible, but a blank input is far more likely to be an
+ * unset repository variable than a deliberate lockout, and silently disabling
+ * `/send` is a bad way to find that out — the kill switch exists to say that
+ * on purpose.
+ */
+export function parseAssociations(raw: string | undefined): string[] {
+  const entries = (raw ?? "")
+    .split(",")
+    .map((entry) => entry.trim().toUpperCase())
+    .filter(Boolean);
+
+  if (entries.length === 0) return [...DEFAULT_MAINTAINER_ASSOCIATIONS];
+
+  for (const entry of entries) {
+    if (!KNOWN_ASSOCIATIONS.has(entry)) {
+      console.warn(
+        `allowed_associations lists "${entry}", which is not a GitHub author_association. ` +
+          `It will match nobody. Known values: ${[...KNOWN_ASSOCIATIONS].join(", ")}.`,
+      );
+    }
   }
+
+  return entries;
+}
+
+/**
+ * L1 POLICY input, evaluated offline. Returns a fact for `core/policy.ts` to
+ * judge rather than throwing here, so one place decides what a denial means and
+ * the result table can report this condition alongside the others.
+ */
+export function isMaintainer(
+  association: string | undefined,
+  allowed: readonly string[],
+): boolean {
+  const value = (association ?? "").trim().toUpperCase();
+  return value.length > 0 && allowed.includes(value);
 }

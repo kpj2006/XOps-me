@@ -72,6 +72,34 @@ inputs:
     required: false
     default: "dry-run"
 
+  # L1 POLICY. Declared here, evaluated offline before anything is resolved or
+  # signed, and reported as a per-condition table in the log on every run.
+  enabled:
+    description: >
+      Kill switch. Set to "false" to refuse every payout outright, whatever the
+      rest of the configuration says. Evaluated before every other condition.
+      Distinct from `mode: dry-run`, which still resolves the payout and reports
+      what would have happened.
+    required: false
+    default: "true"
+  allowed_associations:
+    description: >
+      Comma-separated GitHub author_association values permitted to spend via
+      `/send`, e.g. "OWNER,MEMBER". Applies only to comment-triggered runs — a
+      workflow-configured payout needs no comment author, because editing the
+      workflow already requires write access. An unrecognized value warns and is
+      kept: a typo can only narrow the allowlist, never widen it.
+    required: false
+    default: "OWNER,MEMBER,COLLABORATOR"
+  max_per_payout:
+    description: >
+      I10. The largest single payout allowed, as a human decimal in the same
+      units a `/send` is typed in — "50" means 50 USDC, not 50 atomic units —
+      converted with `decimals`. Checked before a driver is reached, so an
+      over-cap payout is never signed. Unset means no XOps-level cap, and the
+      Safe's allowance period cap becomes the only ceiling.
+    required: false
+
   # Everything below is needed only when mode is not dry-run.
   rpc_url:
     description: "JSON-RPC endpoint for the network."

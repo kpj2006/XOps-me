@@ -135,17 +135,21 @@ No network this week. Everything is pure computation, which means everything is 
 - [ ] `adapters/github/trigger.ts` — `/send` parsing, maintainer permission gate
 - [ ] `adapters/github/comment.ts` — 402 challenge comment + receipt comment
 - [ ] `adapters/github/outputs.ts`
-- [ ] `core/policy.ts` — named constants, evaluated **locally**, no network
+- [x] `core/policy.ts` — named constants, evaluated **locally**, no network
 - [ ] `core/receipt.ts` — machine-readable receipt emitted on every settlement
 - [ ] `.xops.yml` loader with `version: 1`; unknown keys warn, never fail
-- [ ] Kill switch (`settlement.enabled: false`), honored **before** policy
+- [x] Kill switch, as the `enabled` input, evaluated **first** among the conditions
+      (`.xops.yml` is still the planned home for it)
 
 ### Verify
 - [ ] Full loop: PR merge → 402 comment → `/settle` → receipt comment
-- [ ] Non-maintainer `/send` → `POLICY_DENIED`, nothing settles
-- [ ] `max_per_payout` blocks **before** any driver is reached (I10)
+- [x] Non-maintainer `/send` → `POLICY_DENIED`, nothing settles
+- [x] `max_per_payout` blocks **before** any driver is reached (I10)
 - [ ] Policy result table renders in the PR comment with per-condition evidence
-- [ ] Kill switch halts before policy evaluation
+- [x] Kill switch refuses regardless of the rest of the configuration. Note the deviation:
+      it is the *first condition*, not a check ahead of evaluation. Conditions are pure and
+      offline, so there is no work to skip, and evaluating all of them is what lets one run
+      report every problem at once.
 - [ ] Unknown `.xops.yml` key produces a warning, not a failure
 
 ### Exit

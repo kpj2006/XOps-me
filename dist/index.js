@@ -4811,6 +4811,153 @@ function classify(message) {
     return "RPC_UNAVAILABLE";
 }
 
+;// CONCATENATED MODULE: ./src/adapters/github/trigger.ts
+const SEND_LINE = /^\s*\/send\b(.*)$/;
+/** `10`, `2.5`, or `10usdc` with the symbol run onto the number. */
+const AMOUNT_WITH_ASSET = /^([0-9]+(?:\.[0-9]+)?)\s*([a-zA-Z][a-zA-Z0-9]{0,11})?$/;
+const ASSET = /^[a-zA-Z][a-zA-Z0-9]{0,11}$/;
+const USAGE = "usage: `/send <recipient> <amount> [asset]` — e.g. `/send 0xabc…def 10 USDC`";
+/**
+ * Finds a `/send` command anywhere in a comment body.
+ *
+ * Returns `undefined` when the comment simply isn't a command — that is the
+ * common case and not an error. Throws only when a line *is* a `/send` but
+ * cannot be read, because silently misreading an amount is far worse than
+ * refusing it.
+ */
+function parseSendCommand(body) {
+    for (const line of body.split(/\r?\n/)) {
+        const match = SEND_LINE.exec(line);
+        if (!match)
+            continue;
+        const tokens = (match[1] ?? "").trim().split(/\s+/).filter(Boolean);
+        if (tokens.length < 2) {
+            throw new Error(`\`/send\` needs a recipient and an amount. ${USAGE}`);
+        }
+        if (tokens.length > 3) {
+            throw new Error(`\`/send\` got ${tokens.length} arguments and expected at most 3. ${USAGE}`);
+        }
+        const [recipient, second, third] = tokens;
+        const amountMatch = AMOUNT_WITH_ASSET.exec(second);
+        if (!amountMatch) {
+            throw new Error(`"${second}" is not a valid amount. ${USAGE}`);
+        }
+        const [, amount, attachedAsset] = amountMatch;
+        if (attachedAsset && third) {
+            throw new Error(`the asset was given twice, as "${attachedAsset}" and "${third}". ${USAGE}`);
+        }
+        const asset = attachedAsset ?? third;
+        if (asset !== undefined && !ASSET.test(asset)) {
+            throw new Error(`"${asset}" is not a valid asset symbol. ${USAGE}`);
+        }
+        return { recipient, amount, asset };
+    }
+    return undefined;
+}
+/**
+ * Author associations GitHub reports for people who can be trusted to spend the
+ * project's money. Everything else — CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR, NONE —
+ * is denied by default, so a drive-by commenter cannot trigger a payout to
+ * themselves.
+ *
+ * Which associations qualify is the adopter's call, so it is configurable. What
+ * an association *means* stays here rather than in core policy: `author_association`
+ * is a GitHub concept, and core is told only whether the actor may spend.
+ */
+const DEFAULT_MAINTAINER_ASSOCIATIONS = ["OWNER", "MEMBER", "COLLABORATOR"];
+/** Every value GitHub documents for `author_association`. Used to catch typos. */
+const KNOWN_ASSOCIATIONS = new Set([
+    "OWNER",
+    "MEMBER",
+    "COLLABORATOR",
+    "CONTRIBUTOR",
+    "FIRST_TIME_CONTRIBUTOR",
+    "FIRST_TIMER",
+    "MANNEQUIN",
+    "NONE",
+]);
+/**
+ * Reads the configured allowlist, e.g. `OWNER,MEMBER`.
+ *
+ * An unrecognized entry **warns and is kept** rather than failing the run. A
+ * typo can only ever narrow an allowlist — `OWNERS` matches nobody — so the
+ * consequence is a denied payout, never an unintended one. Failing outright
+ * would instead break every run the day GitHub adds an association value. This
+ * follows the `.xops.yml` convention: unknown keys warn, never fail.
+ *
+ * An empty or blank list falls back to the default. Reading it as "allow
+ * nobody" would be defensible, but a blank input is far more likely to be an
+ * unset repository variable than a deliberate lockout, and silently disabling
+ * `/send` is a bad way to find that out — the kill switch exists to say that
+ * on purpose.
+ */
+function parseAssociations(raw) {
+    const entries = (raw ?? "")
+        .split(",")
+        .map((entry) => entry.trim().toUpperCase())
+        .filter(Boolean);
+    if (entries.length === 0)
+        return [...DEFAULT_MAINTAINER_ASSOCIATIONS];
+    for (const entry of entries) {
+        if (!KNOWN_ASSOCIATIONS.has(entry)) {
+            console.warn(`allowed_associations lists "${entry}", which is not a GitHub author_association. ` +
+                `It will match nobody. Known values: ${[...KNOWN_ASSOCIATIONS].join(", ")}.`);
+        }
+    }
+    return entries;
+}
+/**
+ * L1 POLICY input, evaluated offline. Returns a fact for `core/policy.ts` to
+ * judge rather than throwing here, so one place decides what a denial means and
+ * the result table can report this condition alongside the others.
+ */
+function isMaintainer(association, allowed) {
+    const value = (association ?? "").trim().toUpperCase();
+    return value.length > 0 && allowed.includes(value);
+}
+
+;// CONCATENATED MODULE: ./src/core/amount.ts
+// Human amounts in, atomic units out. Pure string arithmetic — floats are not
+// allowed anywhere near money, and `parseFloat("0.1")` is exactly why.
+const DECIMAL = /^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/;
+/**
+ * Converts a human-typed decimal amount into atomic units.
+ *
+ * `toAtomic("10", 6)` is `"10000000"`. `toAtomic("2.5", 6)` is `"2500000"`.
+ *
+ * `decimals` is passed in, never inferred — the asset registry owns that value
+ * (`REFERENCES.md`: resolve decimals from the registry, never infer). Getting it
+ * wrong is a 10^n error in someone's payout, so this throws rather than guesses.
+ */
+function toAtomic(human, decimals) {
+    if (!Number.isInteger(decimals) || decimals < 0 || decimals > 36) {
+        throw new Error(`decimals must be an integer between 0 and 36, got "${decimals}"`);
+    }
+    const value = human.trim();
+    if (!DECIMAL.test(value)) {
+        throw new Error(`amount must be a positive decimal number without separators, got "${human}"`);
+    }
+    const [whole, fraction = ""] = value.split(".");
+    if (fraction.length > decimals) {
+        throw new Error(`amount "${human}" has ${fraction.length} decimal places, but the asset has only ${decimals}`);
+    }
+    // Strip leading zeros but always leave one digit behind.
+    const atomic = `${whole}${fraction.padEnd(decimals, "0")}`.replace(/^0+(?=[0-9])/, "");
+    if (/^0+$/.test(atomic)) {
+        throw new Error(`amount must be greater than zero, got "${human}"`);
+    }
+    return atomic;
+}
+
+;// CONCATENATED MODULE: ./src/core/defaults.ts
+/** I5. Real settlement is always an explicit opt-in. */
+const DEFAULT_SETTLEMENT_MODE = "dry-run";
+/** Kill switch default. Honored before policy evaluation. */
+const DEFAULT_SETTLEMENT_ENABLED = true;
+/** Clock-skew allowance and authorization window, in seconds. */
+const VALID_AFTER_SKEW_SECONDS = 60;
+const VALID_BEFORE_WINDOW_SECONDS = 900;
+
 ;// CONCATENATED MODULE: ./src/core/errors.ts
 const ERROR_CODES = (/* unused pure expression or super */ null && ([
     "AUTH_ALREADY_USED",
@@ -4953,107 +5100,6 @@ function isSuccessCode(code) {
     return ERRORS[code].success;
 }
 
-;// CONCATENATED MODULE: ./src/adapters/github/trigger.ts
-
-const SEND_LINE = /^\s*\/send\b(.*)$/;
-/** `10`, `2.5`, or `10usdc` with the symbol run onto the number. */
-const AMOUNT_WITH_ASSET = /^([0-9]+(?:\.[0-9]+)?)\s*([a-zA-Z][a-zA-Z0-9]{0,11})?$/;
-const ASSET = /^[a-zA-Z][a-zA-Z0-9]{0,11}$/;
-const USAGE = "usage: `/send <recipient> <amount> [asset]` — e.g. `/send 0xabc…def 10 USDC`";
-/**
- * Finds a `/send` command anywhere in a comment body.
- *
- * Returns `undefined` when the comment simply isn't a command — that is the
- * common case and not an error. Throws only when a line *is* a `/send` but
- * cannot be read, because silently misreading an amount is far worse than
- * refusing it.
- */
-function parseSendCommand(body) {
-    for (const line of body.split(/\r?\n/)) {
-        const match = SEND_LINE.exec(line);
-        if (!match)
-            continue;
-        const tokens = (match[1] ?? "").trim().split(/\s+/).filter(Boolean);
-        if (tokens.length < 2) {
-            throw new Error(`\`/send\` needs a recipient and an amount. ${USAGE}`);
-        }
-        if (tokens.length > 3) {
-            throw new Error(`\`/send\` got ${tokens.length} arguments and expected at most 3. ${USAGE}`);
-        }
-        const [recipient, second, third] = tokens;
-        const amountMatch = AMOUNT_WITH_ASSET.exec(second);
-        if (!amountMatch) {
-            throw new Error(`"${second}" is not a valid amount. ${USAGE}`);
-        }
-        const [, amount, attachedAsset] = amountMatch;
-        if (attachedAsset && third) {
-            throw new Error(`the asset was given twice, as "${attachedAsset}" and "${third}". ${USAGE}`);
-        }
-        const asset = attachedAsset ?? third;
-        if (asset !== undefined && !ASSET.test(asset)) {
-            throw new Error(`"${asset}" is not a valid asset symbol. ${USAGE}`);
-        }
-        return { recipient, amount, asset };
-    }
-    return undefined;
-}
-/**
- * Author associations GitHub reports for people who can be trusted to spend the
- * project's money. Everything else — CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR, NONE —
- * is denied, so a drive-by commenter cannot trigger a payout to themselves.
- *
- * This is L1 POLICY and it is evaluated offline, before anything reaches a driver.
- */
-const MAINTAINER_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
-function assertMaintainer(association) {
-    const value = (association ?? "").trim().toUpperCase();
-    if (!MAINTAINER_ASSOCIATIONS.has(value)) {
-        throw new XOpsError("POLICY_DENIED", `\`/send\` is restricted to maintainers. Author association was "${association ?? "unknown"}".`, { association: association ?? null });
-    }
-}
-
-;// CONCATENATED MODULE: ./src/core/amount.ts
-// Human amounts in, atomic units out. Pure string arithmetic — floats are not
-// allowed anywhere near money, and `parseFloat("0.1")` is exactly why.
-const DECIMAL = /^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/;
-/**
- * Converts a human-typed decimal amount into atomic units.
- *
- * `toAtomic("10", 6)` is `"10000000"`. `toAtomic("2.5", 6)` is `"2500000"`.
- *
- * `decimals` is passed in, never inferred — the asset registry owns that value
- * (`REFERENCES.md`: resolve decimals from the registry, never infer). Getting it
- * wrong is a 10^n error in someone's payout, so this throws rather than guesses.
- */
-function toAtomic(human, decimals) {
-    if (!Number.isInteger(decimals) || decimals < 0 || decimals > 36) {
-        throw new Error(`decimals must be an integer between 0 and 36, got "${decimals}"`);
-    }
-    const value = human.trim();
-    if (!DECIMAL.test(value)) {
-        throw new Error(`amount must be a positive decimal number without separators, got "${human}"`);
-    }
-    const [whole, fraction = ""] = value.split(".");
-    if (fraction.length > decimals) {
-        throw new Error(`amount "${human}" has ${fraction.length} decimal places, but the asset has only ${decimals}`);
-    }
-    // Strip leading zeros but always leave one digit behind.
-    const atomic = `${whole}${fraction.padEnd(decimals, "0")}`.replace(/^0+(?=[0-9])/, "");
-    if (/^0+$/.test(atomic)) {
-        throw new Error(`amount must be greater than zero, got "${human}"`);
-    }
-    return atomic;
-}
-
-;// CONCATENATED MODULE: ./src/core/defaults.ts
-/** I5. Real settlement is always an explicit opt-in. */
-const DEFAULT_SETTLEMENT_MODE = "dry-run";
-/** Kill switch default. Honored before policy evaluation. */
-const DEFAULT_SETTLEMENT_ENABLED = true;
-/** Clock-skew allowance and authorization window, in seconds. */
-const VALID_AFTER_SKEW_SECONDS = 60;
-const VALID_BEFORE_WINDOW_SECONDS = 900;
-
 ;// CONCATENATED MODULE: ./src/core/idempotency.ts
 /**
  * Returns a canonical string. No hashing, no rail primitives — a driver derives
@@ -5120,6 +5166,99 @@ function parseIntent(raw) {
         ? { platform, repo, ref, actor }
         : { platform, project: repo, ref, actor };
     return { source, recipient, amount, asset, network, scheme, round };
+}
+
+;// CONCATENATED MODULE: ./src/core/policy.ts
+
+/**
+ * Each condition carries its own error code. A cap breach is not the same event
+ * as an outsider being refused, and a maintainer debugging one should not have
+ * to read prose to tell them apart.
+ */
+const CODES = {
+    SETTLEMENT_ENABLED: "POLICY_DENIED",
+    MAINTAINER_APPROVED: "POLICY_DENIED",
+    AMOUNT_WITHIN_CAP: "AMOUNT_CAP_EXCEEDED",
+};
+/**
+ * Pure and total: no throwing, no network, no clock. Every condition is
+ * evaluated so the result table shows the full picture rather than stopping at
+ * the first failure — a maintainer fixing one problem should be able to see the
+ * next one in the same run.
+ *
+ * Order still matters for which code is reported: the kill switch comes first.
+ */
+function evaluate(policy, facts) {
+    const conditions = [
+        policy.enabled
+            ? { name: "SETTLEMENT_ENABLED", status: "pass", evidence: "settlement is enabled" }
+            : {
+                name: "SETTLEMENT_ENABLED",
+                status: "fail",
+                evidence: "settlement is disabled by the kill switch",
+            },
+        maintainerCondition(facts.actorIsMaintainer),
+        capCondition(policy.maxPerPayout, facts.amount),
+    ];
+    return { allowed: conditions.every((c) => c.status !== "fail"), conditions };
+}
+function maintainerCondition(actorIsMaintainer) {
+    if (actorIsMaintainer === undefined) {
+        return {
+            name: "MAINTAINER_APPROVED",
+            status: "skip",
+            evidence: "not comment-triggered, so there is no comment author to authorize",
+        };
+    }
+    return actorIsMaintainer
+        ? { name: "MAINTAINER_APPROVED", status: "pass", evidence: "the author may spend" }
+        : {
+            name: "MAINTAINER_APPROVED",
+            status: "fail",
+            evidence: "the comment author is not permitted to spend",
+        };
+}
+function capCondition(maxPerPayout, amount) {
+    if (maxPerPayout === undefined) {
+        return {
+            name: "AMOUNT_WITHIN_CAP",
+            status: "skip",
+            evidence: "no max_per_payout set; the Safe's allowance period cap is the only ceiling",
+        };
+    }
+    const cap = BigInt(maxPerPayout);
+    const value = BigInt(amount);
+    return value <= cap
+        ? {
+            name: "AMOUNT_WITHIN_CAP",
+            status: "pass",
+            evidence: `${amount} is within the cap of ${maxPerPayout}`,
+        }
+        : {
+            name: "AMOUNT_WITHIN_CAP",
+            status: "fail",
+            evidence: `${amount} exceeds the cap of ${maxPerPayout} (atomic units)`,
+        };
+}
+/**
+ * I10 lives here: this is what stands between an amount and a driver. Call it
+ * before anything is resolved, signed or recorded.
+ */
+function assertAllowed(decision) {
+    const failed = decision.conditions.find((c) => c.status === "fail");
+    if (!failed)
+        return;
+    throw new XOpsError(CODES[failed.name], `${failed.name}: ${failed.evidence}`, {
+        condition: failed.name,
+        conditions: decision.conditions,
+    });
+}
+/** One line per condition. Rendered in the log, and in a PR comment later. */
+function format(decision) {
+    const mark = { pass: "PASS", fail: "FAIL", skip: "n/a " };
+    return decision.conditions
+        .map((c) => `  [${mark[c.status]}] ${c.name} — ${c.evidence}`)
+        .join("\n");
 }
 
 ;// CONCATENATED MODULE: ./src/drivers/chains.ts
@@ -5366,6 +5505,7 @@ class ResolverChain {
 
 
 
+
 async function run() {
     // L0 TRIGGER. A comment body, when given, is the source of truth for who gets
     // paid and how much — it beats the workflow's static inputs, because a person
@@ -5378,8 +5518,6 @@ async function run() {
         return 0;
     }
     if (command) {
-        // L1 POLICY, offline, before anything else happens.
-        assertMaintainer(readInput("actor_association"));
         const decimals = Number(readInput("decimals") ?? "6");
         console.log(`/send parsed: recipient=${command.recipient} amount=${command.amount}` +
             `${command.asset ? ` asset=${command.asset}` : ""} (decimals=${decimals})`);
@@ -5406,6 +5544,38 @@ async function run() {
         scheme: readInput("scheme"),
         round: readInput("round"),
     });
+    /**
+     * L1 POLICY, offline, before anything is resolved, signed or recorded.
+     *
+     * It runs here rather than inside the `if (command)` branch above for two
+     * reasons. The amount only exists once the intent is parsed, so a cap could
+     * not have been checked earlier — I10 requires that no amount above
+     * `max_per_payout` reaches a driver, and this is the last place that is still
+     * true of every path. And it runs before the `dry-run` branch, so a dry run
+     * is an honest preview: it reports the same refusal a real run would, instead
+     * of reporting success on a payout that policy would have blocked.
+     *
+     * A future resolver may make network calls, so a refusal landing before
+     * resolution also means an outsider cannot make the runner do work.
+     */
+    const maxPerPayout = readInput("max_per_payout");
+    const decision = evaluate({
+        enabled: (readInput("enabled") ?? String(DEFAULT_SETTLEMENT_ENABLED)) !== "false",
+        // Typed as the maintainer thinks of it, in the same units as `/send`, and
+        // converted with the asset's decimals. A cap written in atomic units next
+        // to a `/send 2.50` would be read wrong by exactly the person it protects.
+        maxPerPayout: maxPerPayout === undefined ? undefined : toAtomic(maxPerPayout, decimals),
+    }, {
+        // undefined, not false, when nothing was typed into a comment: this run
+        // was configured by a workflow, and editing one already needs write access.
+        actorIsMaintainer: command === undefined
+            ? undefined
+            : isMaintainer(readInput("actor_association"), parseAssociations(readInput("allowed_associations"))),
+        amount: intent.amount,
+    });
+    console.log("policy:");
+    console.log(format(decision));
+    assertAllowed(decision);
     const idempotencyKey = canonical(keyFor(intent));
     const resolvers = new ResolverChain([new InlineAddressResolver()]);
     const target = await resolvers.resolve(intent.recipient, { rail: intent.network });
@@ -5419,6 +5589,10 @@ async function run() {
         console.log("mode: dry-run — nothing was settled.");
         writeOutputs({ STATUS: "dry-run", IDEMPOTENCY_KEY: idempotencyKey, ERROR_CODE: "" });
         return 0;
+    }
+    if (maxPerPayout === undefined) {
+        // Only worth saying on a path that actually moves money.
+        console.warn("no max_per_payout set — the Safe's allowance period cap is the only ceiling on this payout.");
     }
     const required = (name) => {
         const value = readInput(name);

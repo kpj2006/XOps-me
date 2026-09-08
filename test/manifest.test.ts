@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 
+import { DEFAULT_MAINTAINER_ASSOCIATIONS } from "../src/adapters/github/trigger.js";
+import { DEFAULT_SETTLEMENT_ENABLED } from "../src/core/defaults.js";
 import { canonicalNetwork, lookupChain } from "../src/drivers/chains.js";
 import { SAFE_ALLOWANCE_SCHEME } from "../src/drivers/safe-allowance/driver.js";
 
@@ -80,6 +82,27 @@ test("inputs derived from the network carry no manifest default", () => {
       `${name} is derived from network; a default here would override the chain registry`,
     );
   }
+});
+
+test("the declared allowlist default matches the one the code ships", () => {
+  assert.equal(
+    inputs().get("allowed_associations")?.default,
+    DEFAULT_MAINTAINER_ASSOCIATIONS.join(","),
+    "the manifest advertises one set of maintainers and parseAssociations falls back to another",
+  );
+});
+
+test("the kill switch defaults to on, and only the string \"false\" turns it off", () => {
+  // main.ts compares against "false" rather than parsing a boolean, so that a
+  // typo or an unset repository variable cannot silently disable payouts.
+  assert.equal(inputs().get("enabled")?.default, String(DEFAULT_SETTLEMENT_ENABLED));
+});
+
+test("max_per_payout has no default, so no cap is invented", () => {
+  // A default cap would refuse payouts nobody configured a limit for, and the
+  // Safe's allowance period cap is the real ceiling either way.
+  assert.ok(inputs().has("max_per_payout"));
+  assert.equal(inputs().get("max_per_payout")?.default, undefined);
 });
 
 test("every input main.ts reads is declared in action.yml", () => {

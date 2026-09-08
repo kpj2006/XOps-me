@@ -249,8 +249,19 @@ contract rejects it as used. That rejection is **success** (I8).
 - Timestamps: `validAfter = now - 60` (clock skew), `validBefore = now + 900` (15 min).
 - Multi-recipient is **N independent authorizations**, not one atomic batch. Each is
   independently idempotent and independently retryable.
-- Policy conditions are **named constants** (`PR_MERGED`, `TESTS_PASS`, `MAINTAINER_APPROVED`,
-  `COVERAGE_GT_80`). Never an expression language — that is a permanent security surface.
+- Policy conditions are **named constants**, never an expression language — that is a permanent
+  security surface, because whoever can edit an expression can rewrite the rule meant to
+  constrain them. Implemented in `src/core/policy.ts`: `SETTLEMENT_ENABLED` (kill switch,
+  evaluated first), `MAINTAINER_APPROVED`, `AMOUNT_WITHIN_CAP` (I10). Planned: `PR_MERGED`,
+  `TESTS_PASS`, `COVERAGE_GT_80`.
+- Policy is **declared, not scripted**. An adopter configures it with action inputs
+  (`enabled`, `allowed_associations`, `max_per_payout`) and never writes assertions in workflow
+  YAML. `evaluate()` is pure and total; every condition is evaluated so one run shows every
+  problem, and `assertAllowed()` reports the first failure's code.
+- What an `author_association` *means* belongs to the GitHub adapter. Core policy is told only
+  whether the actor may spend — and `undefined` there means "not comment-triggered", which
+  **skips** the condition rather than failing it. Treating a missing comment author as "not a
+  maintainer" would deny every workflow-configured payout.
 - `.xops.yml` carries `version: 1`. Unknown keys warn, never fail. Never repurpose a key.
 
 ---

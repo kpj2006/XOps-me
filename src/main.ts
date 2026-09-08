@@ -2,12 +2,13 @@ import { readInput as input } from "./adapters/github/inputs.js";
 import { writeOutputs } from "./adapters/github/outputs.js";
 import { PullRequestReceiptLedger } from "./adapters/github/receipts.js";
 import { SafeAllowanceDriver } from "./drivers/safe-allowance/driver.js";
-import { assertMaintainer, parseSendCommand } from "./adapters/github/trigger.js";
+import { isMaintainer, parseAssociations, parseSendCommand } from "./adapters/github/trigger.js";
 import { toAtomic } from "./core/amount.js";
-import { DEFAULT_SETTLEMENT_MODE } from "./core/defaults.js";
+import { DEFAULT_SETTLEMENT_ENABLED, DEFAULT_SETTLEMENT_MODE } from "./core/defaults.js";
 import { XOpsError } from "./core/errors.js";
 import { canonical, keyFor } from "./core/idempotency.js";
 import { parseIntent } from "./core/intent.js";
+import { assertAllowed, evaluate, format } from "./core/policy.js";
 import { canonicalNetwork, lookupChain } from "./drivers/chains.js";
 import { DriverRegistry } from "./drivers/registry.js";
 import { InlineAddressResolver, ResolverChain } from "./resolvers/index.js";
@@ -26,9 +27,6 @@ async function run(): Promise<number> {
   }
 
   if (command) {
-    // L1 POLICY, offline, before anything else happens.
-    assertMaintainer(input("actor_association"));
-
     const decimals = Number(input("decimals") ?? "6");
     console.log(
       `/send parsed: recipient=${command.recipient} amount=${command.amount}` +
@@ -62,6 +60,44 @@ async function run(): Promise<number> {
     round: input("round"),
   });
 
+  /**
+   * L1 POLICY, offline, before anything is resolved, signed or recorded.
+   *
+   * It runs here rather than inside the `if (command)` branch above for two
+   * reasons. The amount only exists once the intent is parsed, so a cap could
+   * not have been checked earlier — I10 requires that no amount above
+   * `max_per_payout` reaches a driver, and this is the last place that is still
+   * true of every path. And it runs before the `dry-run` branch, so a dry run
+   * is an honest preview: it reports the same refusal a real run would, instead
+   * of reporting success on a payout that policy would have blocked.
+   *
+   * A future resolver may make network calls, so a refusal landing before
+   * resolution also means an outsider cannot make the runner do work.
+   */
+  const maxPerPayout = input("max_per_payout");
+  const decision = evaluate(
+    {
+      enabled: (input("enabled") ?? String(DEFAULT_SETTLEMENT_ENABLED)) !== "false",
+      // Typed as the maintainer thinks of it, in the same units as `/send`, and
+      // converted with the asset's decimals. A cap written in atomic units next
+      // to a `/send 2.50` would be read wrong by exactly the person it protects.
+      maxPerPayout: maxPerPayout === undefined ? undefined : toAtomic(maxPerPayout, decimals),
+    },
+    {
+      // undefined, not false, when nothing was typed into a comment: this run
+      // was configured by a workflow, and editing one already needs write access.
+      actorIsMaintainer:
+        command === undefined
+          ? undefined
+          : isMaintainer(input("actor_association"), parseAssociations(input("allowed_associations"))),
+      amount: intent.amount,
+    },
+  );
+
+  console.log("policy:");
+  console.log(format(decision));
+  assertAllowed(decision);
+
   const idempotencyKey = canonical(keyFor(intent));
   const resolvers = new ResolverChain([new InlineAddressResolver()]);
   const target = await resolvers.resolve(intent.recipient, { rail: intent.network });
@@ -77,6 +113,13 @@ async function run(): Promise<number> {
     console.log("mode: dry-run — nothing was settled.");
     writeOutputs({ STATUS: "dry-run", IDEMPOTENCY_KEY: idempotencyKey, ERROR_CODE: "" });
     return 0;
+  }
+
+  if (maxPerPayout === undefined) {
+    // Only worth saying on a path that actually moves money.
+    console.warn(
+      "no max_per_payout set — the Safe's allowance period cap is the only ceiling on this payout.",
+    );
   }
 
   const required = (name: string): string => {

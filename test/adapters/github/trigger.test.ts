@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { assertMaintainer, parseSendCommand } from "../../../src/adapters/github/trigger.js";
+import {
+  DEFAULT_MAINTAINER_ASSOCIATIONS,
+  isMaintainer,
+  parseAssociations,
+  parseSendCommand,
+} from "../../../src/adapters/github/trigger.js";
 import { toAtomic } from "../../../src/core/amount.js";
 
 const ADDR = "0x000000000000000000000000000000000000dEaD";
@@ -45,12 +50,61 @@ test("refuses a command it cannot read rather than guessing", () => {
   assert.throws(() => parseSendCommand(`/send ${ADDR} 10usdc USDC`), /asset was given twice/);
 });
 
-test("maintainers may send; everyone else is denied with POLICY_DENIED", () => {
-  for (const ok of ["OWNER", "MEMBER", "COLLABORATOR", "owner"]) {
-    assert.doesNotThrow(() => assertMaintainer(ok));
+test("by default maintainers may send and nobody else may", () => {
+  const allowed = [...DEFAULT_MAINTAINER_ASSOCIATIONS];
+  for (const ok of ["OWNER", "MEMBER", "COLLABORATOR", "owner", " Member "]) {
+    assert.equal(isMaintainer(ok, allowed), true, `${ok} should be allowed`);
   }
   for (const denied of ["CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "NONE", "", undefined]) {
-    assert.throws(() => assertMaintainer(denied), { code: "POLICY_DENIED" });
+    assert.equal(isMaintainer(denied, allowed), false, `${denied} should be denied`);
+  }
+});
+
+test("the allowlist is configurable, and narrowing it takes effect", () => {
+  const ownerOnly = parseAssociations("OWNER");
+  assert.deepEqual(ownerOnly, ["OWNER"]);
+  assert.equal(isMaintainer("OWNER", ownerOnly), true);
+  assert.equal(isMaintainer("COLLABORATOR", ownerOnly), false);
+});
+
+test("the allowlist is read case- and whitespace-insensitively", () => {
+  assert.deepEqual(parseAssociations(" owner , member "), ["OWNER", "MEMBER"]);
+});
+
+/**
+ * A blank input is far more likely to be an unset repository variable than a
+ * deliberate lockout. Reading it as "allow nobody" would silently disable
+ * `/send`; the kill switch is how you say that on purpose.
+ */
+test("a blank or missing allowlist falls back to the default rather than locking out", () => {
+  for (const blank of [undefined, "", "   ", ",", " , "]) {
+    assert.deepEqual(parseAssociations(blank), [...DEFAULT_MAINTAINER_ASSOCIATIONS]);
+  }
+});
+
+/**
+ * Unknown values warn and are kept. A typo can only ever narrow an allowlist —
+ * "OWNERS" matches nobody — so the consequence is a refused payout, never an
+ * unintended one, and failing outright would break every run the day GitHub
+ * adds an association value.
+ */
+test("an unrecognized association warns, is kept, and matches nobody", () => {
+  const warnings: string[] = [];
+  const original = console.warn;
+  console.warn = (msg: unknown) => warnings.push(String(msg));
+  try {
+    const parsed = parseAssociations("OWNER,OWNERS");
+    assert.deepEqual(parsed, ["OWNER", "OWNERS"]);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0] ?? "", /OWNERS/);
+    assert.equal(isMaintainer("OWNERS", parsed), true, "kept entries still match themselves");
+    assert.equal(
+      isMaintainer("CONTRIBUTOR", parsed),
+      false,
+      "but a typo never widens the allowlist",
+    );
+  } finally {
+    console.warn = original;
   }
 });
 
