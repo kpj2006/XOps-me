@@ -334,3 +334,11 @@ build/
 .playwright-mcp/
 karungsocprop.pdf
 *.pdf
+
+# A separate repository with its own remote, cloned here for convenience.
+# Without this, `git add -A` in the parent swallows it as a gitlink or as files.
+demo-XOps/
+
+# Windows' null device is not a path in Git Bash, so `> nul` or
+# `GITHUB_OUTPUT=nul` silently creates a real file full of test output.
+nul
